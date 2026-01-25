@@ -19,6 +19,17 @@ Keep functions focused on a single responsibility. Prefer pure functions that do
 ### 5. **Be Selective with Dependencies**
 Only add external crates when they provide significant value. Check the crate's maintenance status, documentation quality, and community adoption on crates.io. Fewer dependencies mean faster builds, smaller binaries, and fewer security concerns.
 
+## Code Quality Guidelines
+
+### Readable Variable Names
+Use descriptive, self-documenting variable names to avoid the need for inline comments. Names should clearly express intent and purpose. Prefer `user_authentication_token` over `uat` or `token`.
+
+### Prefer Early Returns
+Use early returns to reduce nesting and improve readability. Exit functions as soon as error conditions or edge cases are detected instead of wrapping the entire function in conditional logic.
+
+### Balance Abstraction and File Size
+Avoid over-abstraction that makes code harder to follow, but also don't create monolithic files. Keep files under 1000 lines of code by extracting logical modules. If logic cannot be reasonably extracted, exceeding this limit is acceptable.
+
 ## Test-Driven Development Cycle
 
 **Red → Green → Refactor**: Write a failing test (Red), write minimal code to pass it (Green), improve the code quality while keeping tests passing (Refactor). Repeat this cycle for each feature or bug fix.

@@ -19,6 +19,17 @@ Write small, focused functions that do one thing well. Prefer pure functions wit
 ### 5. **Minimize Dependencies**
 Only add dependencies when necessary. Each dependency adds complexity and potential security issues. Check crates.io ratings and recent maintenance before adding new dependencies.
 
+## Code Quality Guidelines
+
+### Readable Variable Names
+Use descriptive, self-documenting variable names to avoid the need for inline comments. Names should clearly express intent and purpose. Prefer `user_authentication_token` over `uat` or `token`.
+
+### Prefer Early Returns
+Use early returns to reduce nesting and improve readability. Exit functions as soon as error conditions or edge cases are detected instead of wrapping the entire function in conditional logic.
+
+### Balance Abstraction and File Size
+Avoid over-abstraction that makes code harder to follow, but also don't create monolithic files. Keep files under 1000 lines of code by extracting logical modules. If logic cannot be reasonably extracted, exceeding this limit is acceptable.
+
 ## TDD Workflow
 
 1. **Write test** → 2. **Run test (should fail)** → 3. **Implement code** → 4. **Run test (should pass)** → 5. **Refactor** → 6. **Repeat**

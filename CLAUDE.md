@@ -1,0 +1,24 @@
+# Rust Development Guidelines for Claude
+
+This guide helps Claude AI efficiently develop Rust projects using test-driven development (TDD) and the 80/20 principle. Focus on writing tests before code to ensure quality and maintainability while moving quickly on the most important aspects.
+
+## Core Development Rules
+
+### 1. **Test-Driven Development: Tests Before Code**
+**Always** write unit tests first, then implement the code to pass those tests. Create test modules with `#[cfg(test)]` and individual tests with `#[test]`. Run `cargo test` to verify the test fails initially, implement the feature, then confirm the test passes. This is non-negotiable for quality code.
+
+### 2. **Leverage Cargo's Built-in Tools**
+Use the Rust toolchain effectively: `cargo build` to compile, `cargo test` to run tests, `cargo clippy` for lint checks, and `cargo fmt` to auto-format code. Run these commands frequently to catch issues early and maintain code quality with minimal effort.
+
+### 3. **Embrace Rust's Type System and Error Handling**
+Use `Result<T, E>` for fallible operations and `Option<T>` for nullable values. Never use `unwrap()` or `expect()` in production code paths—always handle errors explicitly. Use the `?` operator to propagate errors cleanly up the call stack.
+
+### 4. **Write Modular, Testable Functions**
+Keep functions focused on a single responsibility. Prefer pure functions that don't mutate state. Structure code in small modules with clear boundaries. This makes unit testing straightforward and code easier to reason about.
+
+### 5. **Be Selective with Dependencies**
+Only add external crates when they provide significant value. Check the crate's maintenance status, documentation quality, and community adoption on crates.io. Fewer dependencies mean faster builds, smaller binaries, and fewer security concerns.
+
+## Test-Driven Development Cycle
+
+**Red → Green → Refactor**: Write a failing test (Red), write minimal code to pass it (Green), improve the code quality while keeping tests passing (Refactor). Repeat this cycle for each feature or bug fix.

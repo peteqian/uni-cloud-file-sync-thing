@@ -1,0 +1,17 @@
+[package]
+name = "cloudsync-ipc"
+description = "IPC server and client for CloudSync shell extensions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cloudsync-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }

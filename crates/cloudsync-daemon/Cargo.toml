@@ -1,0 +1,25 @@
+[package]
+name = "cloudsync-daemon"
+description = "CloudSync daemon - background sync service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cloudsync"
+path = "src/main.rs"
+
+[dependencies]
+cloudsync-core.workspace = true
+cloudsync-config.workspace = true
+cloudsync-db.workspace = true
+cloudsync-ipc.workspace = true
+cloudsync-providers.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "cloudsync-db"
+description = "Database layer for CloudSync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cloudsync-core.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

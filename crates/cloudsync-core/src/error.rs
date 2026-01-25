@@ -70,7 +70,10 @@ mod tests {
     #[test]
     fn error_display_authentication() {
         let err = Error::Authentication("Invalid credentials".to_string());
-        assert_eq!(err.to_string(), "Authentication failed: Invalid credentials");
+        assert_eq!(
+            err.to_string(),
+            "Authentication failed: Invalid credentials"
+        );
     }
 
     #[test]

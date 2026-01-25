@@ -14,8 +14,7 @@ pub use paths::CloudSyncPaths;
 use serde::{Deserialize, Serialize};
 
 /// Main configuration structure for CloudSync.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Config {
     /// General application settings.
     #[serde(default)]
@@ -44,8 +43,7 @@ impl Config {
             return Ok(Self::default());
         }
 
-        let contents = std::fs::read_to_string(path)
-            .map_err(ConfigError::Io)?;
+        let contents = std::fs::read_to_string(path).map_err(ConfigError::Io)?;
 
         let config: Config = toml::from_str(&contents)?;
         config.validate()?;
@@ -79,7 +77,6 @@ impl Config {
         Ok(())
     }
 }
-
 
 /// General application settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -195,7 +192,6 @@ pub enum ConflictResolution {
     /// Keep both versions (rename).
     KeepBoth,
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -9,7 +9,9 @@ use async_trait::async_trait;
 use url::Url;
 
 use crate::error::Result;
-use crate::types::{ChangeList, CloudItem, CloudPath, FileId, FileVersion, ProgressSender, ShareOptions};
+use crate::types::{
+    ChangeList, CloudItem, CloudPath, FileId, FileVersion, ProgressSender, ShareOptions,
+};
 
 /// Trait that all cloud storage providers must implement.
 ///

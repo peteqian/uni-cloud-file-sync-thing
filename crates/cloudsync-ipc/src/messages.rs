@@ -42,9 +42,7 @@ pub enum Response {
     },
 
     /// Status for multiple files.
-    StatusBatch {
-        statuses: Vec<FileStatus>,
-    },
+    StatusBatch { statuses: Vec<FileStatus> },
 
     /// Operation completed successfully.
     Ok,

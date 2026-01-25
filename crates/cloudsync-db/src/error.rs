@@ -7,6 +7,9 @@ pub enum DbError {
     #[error("Database not found: {0}")]
     NotFound(String),
 
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
     #[error("Query failed: {0}")]
     Query(String),
 

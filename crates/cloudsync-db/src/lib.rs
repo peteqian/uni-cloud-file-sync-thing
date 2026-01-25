@@ -21,6 +21,7 @@
 //! # }
 //! ```
 
+pub mod accounts;
 pub mod connection;
 pub mod error;
 pub mod migrations;
@@ -29,6 +30,10 @@ use rusqlite::Connection;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+pub use accounts::{
+    create_account, delete_account, get_account_by_id, list_accounts, update_account, Account,
+    ACCOUNTS_MIGRATION,
+};
 pub use connection::{ConnectionConfig, ConnectionManager};
 pub use error::{DbError, DbResult};
 pub use migrations::{Migration, Migrator};
@@ -117,7 +122,7 @@ impl Database {
         F: FnOnce(&Connection) -> DbResult<T>,
     {
         let conn = self.conn.lock().unwrap();
-        f(&*conn)
+        f(&conn)
     }
 }
 

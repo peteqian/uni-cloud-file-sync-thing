@@ -211,7 +211,9 @@ version = "0.1.0"
 dependencies = [
  "cloudsync-core",
  "directories",
+ "libc",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "toml",

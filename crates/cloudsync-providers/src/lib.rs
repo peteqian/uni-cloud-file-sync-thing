@@ -8,8 +8,9 @@
 //! Each provider module handles authentication, API communication, and
 //! mapping provider-specific concepts to CloudSync's unified model.
 
+pub mod gdrive;
+
 // Provider modules will be added in later phases
-// pub mod gdrive;
 // pub mod dropbox;
 // pub mod onedrive;
 

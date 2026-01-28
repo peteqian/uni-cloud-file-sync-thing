@@ -61,6 +61,13 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 # URL handling
 url = { version = "2.5", features = ["serde"] }
 
+# Cryptography
+sha2 = "0.10"
+base64-url = "3.0"
+
+# Random generation
+rand = "0.8"
+
 # Path handling
 directories = "5.0"
 

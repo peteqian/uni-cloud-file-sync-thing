@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
 use yup_oauth2::{
-    authenticator::Authenticator, ApplicationSecret, InstalledFlowAuthenticator,
-    InstalledFlowReturnMethod,
+    authenticator::Authenticator, storage::TokenStorage, ApplicationSecret,
+    InstalledFlowAuthenticator, InstalledFlowReturnMethod,
 };
 
 /// Errors that can occur during OAuth authentication.
@@ -116,6 +116,7 @@ impl OAuthConfig {
 pub struct OAuthAuthenticatorBuilder {
     config: OAuthConfig,
     token_cache_path: Option<PathBuf>,
+    custom_storage: Option<Box<dyn TokenStorage>>,
     return_method: InstalledFlowReturnMethod,
 }
 
@@ -125,6 +126,7 @@ impl OAuthAuthenticatorBuilder {
         Self {
             config,
             token_cache_path: None,
+            custom_storage: None,
             return_method: InstalledFlowReturnMethod::HTTPRedirect,
         }
     }
@@ -132,8 +134,18 @@ impl OAuthAuthenticatorBuilder {
     /// Sets the path where tokens should be cached.
     ///
     /// If set, tokens will be persisted to disk and reused across sessions.
+    /// Note: This is ignored if `with_custom_storage` is used.
     pub fn with_token_cache(mut self, path: PathBuf) -> Self {
         self.token_cache_path = Some(path);
+        self
+    }
+
+    /// Sets a custom token storage implementation.
+    ///
+    /// This allows using secure storage backends like system keyring.
+    /// If set, this takes precedence over `with_token_cache`.
+    pub fn with_custom_storage(mut self, storage: Box<dyn TokenStorage>) -> Self {
+        self.custom_storage = Some(storage);
         self
     }
 
@@ -153,7 +165,7 @@ impl OAuthAuthenticatorBuilder {
     /// - Handling the redirect callback
     /// - Exchanging authorization codes for tokens
     /// - Refreshing expired tokens
-    /// - Persisting tokens to disk (if token_cache_path is set)
+    /// - Persisting tokens (to custom storage or disk)
     pub async fn build(
         self,
     ) -> Result<
@@ -166,7 +178,10 @@ impl OAuthAuthenticatorBuilder {
 
         let mut auth_builder = InstalledFlowAuthenticator::builder(secret, self.return_method);
 
-        if let Some(cache_path) = self.token_cache_path {
+        // Use custom storage if provided, otherwise use file cache
+        if let Some(storage) = self.custom_storage {
+            auth_builder = auth_builder.with_storage(storage);
+        } else if let Some(cache_path) = self.token_cache_path {
             auth_builder = auth_builder.persist_tokens_to_disk(cache_path);
         }
 

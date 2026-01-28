@@ -46,8 +46,8 @@ use yup_oauth2::InstalledFlowReturnMethod;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Read credentials from environment
-    let client_id = env::var("GOOGLE_CLIENT_ID")
-        .expect("GOOGLE_CLIENT_ID environment variable not set");
+    let client_id =
+        env::var("GOOGLE_CLIENT_ID").expect("GOOGLE_CLIENT_ID environment variable not set");
     let client_secret = env::var("GOOGLE_CLIENT_SECRET")
         .expect("GOOGLE_CLIENT_SECRET environment variable not set");
 
@@ -82,7 +82,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = client.get_token().await?;
 
     println!("✅ Access token obtained!");
-    println!("   Token: {}...", &token.token().unwrap_or("")[..40.min(token.token().unwrap_or("").len())]);
+    println!(
+        "   Token: {}...",
+        &token.token().unwrap_or("")[..40.min(token.token().unwrap_or("").len())]
+    );
 
     if let Some(expiry) = token.expiration_time() {
         println!("   Expires: {}", expiry);

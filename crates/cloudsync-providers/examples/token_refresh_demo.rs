@@ -28,8 +28,8 @@ use yup_oauth2::InstalledFlowReturnMethod;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client_id = env::var("GOOGLE_CLIENT_ID")
-        .expect("GOOGLE_CLIENT_ID environment variable not set");
+    let client_id =
+        env::var("GOOGLE_CLIENT_ID").expect("GOOGLE_CLIENT_ID environment variable not set");
     let client_secret = env::var("GOOGLE_CLIENT_SECRET")
         .expect("GOOGLE_CLIENT_SECRET environment variable not set");
 
@@ -83,7 +83,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   • No manual refresh logic needed");
     println!("   • Tokens are cached and reused when valid");
     println!("\n💡 To test actual refresh:");
-    println!("   1. Edit {} and set expiry to the past", token_cache.display());
+    println!(
+        "   1. Edit {} and set expiry to the past",
+        token_cache.display()
+    );
     println!("   2. Run this example again");
     println!("   3. Watch it automatically refresh the token");
 

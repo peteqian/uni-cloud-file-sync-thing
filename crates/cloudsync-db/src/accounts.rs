@@ -535,7 +535,7 @@ mod tests {
     fn test_all_provider_types_supported() {
         let conn = setup_test_db();
 
-        let providers = vec![
+        let providers = [
             ProviderId::GoogleDrive,
             ProviderId::Dropbox,
             ProviderId::OneDrive,

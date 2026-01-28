@@ -9,15 +9,18 @@ license.workspace = true
 cloudsync-core.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
-reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 url.workspace = true
-sha2.workspace = true
-base64-url.workspace = true
-rand.workspace = true
+
+# Google Drive API
+google-drive3.workspace = true
+yup-oauth2.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+hyper-rustls.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

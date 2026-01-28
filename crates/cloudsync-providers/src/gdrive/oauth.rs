@@ -1,18 +1,44 @@
-//! OAuth 2.0 authentication for Google Drive.
+//! OAuth 2.0 authentication for Google Drive using yup-oauth2.
 //!
-//! This module implements the OAuth 2.0 authorization code flow with PKCE
+//! This module provides a wrapper around yup-oauth2's InstalledFlowAuthenticator
 //! for Google Drive API access.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use url::Url;
+use std::path::PathBuf;
+use thiserror::Error;
+use yup_oauth2::{
+    authenticator::Authenticator, ApplicationSecret, InstalledFlowAuthenticator,
+    InstalledFlowReturnMethod,
+};
+
+/// Errors that can occur during OAuth authentication.
+#[derive(Debug, Error)]
+pub enum OAuthError {
+    #[error("Failed to build authenticator: {0}")]
+    AuthenticatorBuild(String),
+
+    #[error("Failed to read application secret: {0}")]
+    SecretRead(#[from] std::io::Error),
+
+    #[error("Invalid application secret format: {0}")]
+    InvalidSecret(#[from] serde_json::Error),
+
+    #[error("OAuth flow error: {0}")]
+    FlowError(String),
+}
 
 /// OAuth configuration for Google Drive.
+///
+/// This wraps yup-oauth2's ApplicationSecret with our application-specific
+/// configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthConfig {
     /// OAuth client ID from Google Cloud Console.
     pub client_id: String,
+    /// OAuth client secret from Google Cloud Console.
+    pub client_secret: String,
     /// Redirect URI registered with the OAuth application.
+    /// For installed apps, typically "http://localhost" with a port.
     pub redirect_uri: String,
     /// OAuth scopes to request.
     pub scopes: Vec<String>,
@@ -20,165 +46,134 @@ pub struct OAuthConfig {
 
 impl OAuthConfig {
     /// Creates a new OAuth configuration.
-    pub fn new(client_id: String, redirect_uri: String, scopes: Vec<String>) -> Self {
+    pub fn new(
+        client_id: String,
+        client_secret: String,
+        redirect_uri: String,
+        scopes: Vec<String>,
+    ) -> Self {
         Self {
             client_id,
+            client_secret,
             redirect_uri,
             scopes,
         }
     }
 
-    /// Creates a default configuration for Google Drive with read/write access.
-    pub fn default_gdrive(client_id: String, redirect_uri: String) -> Self {
+    /// Creates a default configuration for Google Drive with full access.
+    pub fn default_gdrive(client_id: String, client_secret: String) -> Self {
         Self {
             client_id,
-            redirect_uri,
+            client_secret,
+            redirect_uri: "http://localhost:8080".to_string(),
             scopes: vec![
                 "https://www.googleapis.com/auth/drive.file".to_string(),
                 "https://www.googleapis.com/auth/drive.metadata.readonly".to_string(),
             ],
         }
     }
-}
 
-/// PKCE (Proof Key for Code Exchange) challenge for enhanced OAuth security.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PkceChallenge {
-    /// The code verifier (random string).
-    pub verifier: String,
-    /// The code challenge (SHA-256 hash of verifier, base64url encoded).
-    pub challenge: String,
-}
-
-impl PkceChallenge {
-    /// Generates a new PKCE challenge.
-    ///
-    /// Creates a random code verifier and derives the challenge using SHA-256.
-    pub fn generate() -> Self {
-        // Generate a random 32-byte verifier
-        let verifier = Self::generate_verifier();
-        let challenge = Self::generate_challenge(&verifier);
-
-        Self {
-            verifier,
-            challenge,
+    /// Creates an ApplicationSecret for use with yup-oauth2.
+    pub fn to_application_secret(&self) -> ApplicationSecret {
+        ApplicationSecret {
+            client_id: self.client_id.clone(),
+            client_secret: self.client_secret.clone(),
+            token_uri: "https://oauth2.googleapis.com/token".to_string(),
+            auth_uri: "https://accounts.google.com/o/oauth2/auth".to_string(),
+            redirect_uris: vec![self.redirect_uri.clone()],
+            ..Default::default()
         }
     }
 
-    /// Generates a random code verifier.
-    fn generate_verifier() -> String {
-        use rand::Rng;
-        const CHARSET: &[u8] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-        const VERIFIER_LENGTH: usize = 128;
+    /// Reads OAuth configuration from a Google client secrets JSON file.
+    pub async fn from_secret_file(path: PathBuf) -> Result<Self, OAuthError> {
+        let secret = yup_oauth2::read_application_secret(path).await?;
 
-        let mut rng = rand::thread_rng();
-        (0..VERIFIER_LENGTH)
-            .map(|_| {
-                let idx = rng.gen_range(0..CHARSET.len());
-                CHARSET[idx] as char
-            })
-            .collect()
-    }
+        let client_id = secret.client_id.clone();
+        let client_secret = secret.client_secret.clone();
+        let redirect_uri = secret
+            .redirect_uris
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "http://localhost:8080".to_string());
 
-    /// Generates the code challenge from a verifier.
-    fn generate_challenge(verifier: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(verifier.as_bytes());
-        let hash = hasher.finalize();
-        base64_url::encode(&hash)
+        Ok(Self {
+            client_id,
+            client_secret,
+            redirect_uri,
+            scopes: vec![
+                "https://www.googleapis.com/auth/drive.file".to_string(),
+                "https://www.googleapis.com/auth/drive.metadata.readonly".to_string(),
+            ],
+        })
     }
 }
 
-/// Builder for creating OAuth authorization URLs.
-pub struct AuthorizationUrlBuilder {
+/// OAuth authenticator builder for Google Drive.
+///
+/// This provides a high-level API for setting up OAuth authentication
+/// using yup-oauth2's InstalledFlowAuthenticator.
+pub struct OAuthAuthenticatorBuilder {
     config: OAuthConfig,
-    state: Option<String>,
-    pkce: Option<PkceChallenge>,
-    access_type: String,
-    prompt: Option<String>,
+    token_cache_path: Option<PathBuf>,
+    return_method: InstalledFlowReturnMethod,
 }
 
-impl AuthorizationUrlBuilder {
-    /// Google OAuth 2.0 authorization endpoint.
-    const AUTHORIZATION_ENDPOINT: &'static str = "https://accounts.google.com/o/oauth2/v2/auth";
-
-    /// Creates a new authorization URL builder with the given configuration.
+impl OAuthAuthenticatorBuilder {
+    /// Creates a new authenticator builder with the given configuration.
     pub fn new(config: OAuthConfig) -> Self {
         Self {
             config,
-            state: None,
-            pkce: None,
-            access_type: "offline".to_string(),
-            prompt: None,
+            token_cache_path: None,
+            return_method: InstalledFlowReturnMethod::HTTPRedirect,
         }
     }
 
-    /// Sets the state parameter for CSRF protection.
+    /// Sets the path where tokens should be cached.
     ///
-    /// The state should be a unique, random string that the client can verify
-    /// when receiving the authorization code callback.
-    pub fn with_state(mut self, state: String) -> Self {
-        self.state = Some(state);
+    /// If set, tokens will be persisted to disk and reused across sessions.
+    pub fn with_token_cache(mut self, path: PathBuf) -> Self {
+        self.token_cache_path = Some(path);
         self
     }
 
-    /// Enables PKCE (Proof Key for Code Exchange) with the given challenge.
-    pub fn with_pkce(mut self, pkce: PkceChallenge) -> Self {
-        self.pkce = Some(pkce);
+    /// Sets the OAuth return method.
+    ///
+    /// Default is HTTPRedirect. For CLI applications, Interactive might be preferable.
+    pub fn with_return_method(mut self, method: InstalledFlowReturnMethod) -> Self {
+        self.return_method = method;
         self
     }
 
-    /// Sets the access type (online or offline).
+    /// Builds the authenticator.
     ///
-    /// Use "offline" to receive a refresh token for long-lived access.
-    pub fn with_access_type(mut self, access_type: String) -> Self {
-        self.access_type = access_type;
-        self
-    }
+    /// This creates an Authenticator that handles the complete
+    /// OAuth flow including:
+    /// - Generating authorization URLs
+    /// - Handling the redirect callback
+    /// - Exchanging authorization codes for tokens
+    /// - Refreshing expired tokens
+    /// - Persisting tokens to disk (if token_cache_path is set)
+    pub async fn build(
+        self,
+    ) -> Result<
+        Authenticator<
+            hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+        >,
+        OAuthError,
+    > {
+        let secret = self.config.to_application_secret();
 
-    /// Sets the prompt parameter.
-    ///
-    /// Common values: "consent" (force consent screen), "select_account" (force account selection).
-    pub fn with_prompt(mut self, prompt: String) -> Self {
-        self.prompt = Some(prompt);
-        self
-    }
+        let mut auth_builder = InstalledFlowAuthenticator::builder(secret, self.return_method);
 
-    /// Builds the authorization URL.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(Url)` with the complete authorization URL, or `Err` if URL construction fails.
-    pub fn build(self) -> Result<Url, url::ParseError> {
-        let mut url = Url::parse(Self::AUTHORIZATION_ENDPOINT)?;
-
-        {
-            let mut query = url.query_pairs_mut();
-
-            // Required parameters
-            query.append_pair("client_id", &self.config.client_id);
-            query.append_pair("redirect_uri", &self.config.redirect_uri);
-            query.append_pair("response_type", "code");
-            query.append_pair("scope", &self.config.scopes.join(" "));
-            query.append_pair("access_type", &self.access_type);
-
-            // Optional parameters
-            if let Some(state) = &self.state {
-                query.append_pair("state", state);
-            }
-
-            if let Some(pkce) = &self.pkce {
-                query.append_pair("code_challenge", &pkce.challenge);
-                query.append_pair("code_challenge_method", "S256");
-            }
-
-            if let Some(prompt) = &self.prompt {
-                query.append_pair("prompt", prompt);
-            }
+        if let Some(cache_path) = self.token_cache_path {
+            auth_builder = auth_builder.persist_tokens_to_disk(cache_path);
         }
 
-        Ok(url)
+        auth_builder
+            .build()
+            .await
+            .map_err(|e| OAuthError::AuthenticatorBuild(e.to_string()))
     }
 }
 
@@ -190,12 +185,14 @@ mod tests {
     fn oauth_config_creation() {
         let config = OAuthConfig::new(
             "test-client-id".to_string(),
-            "http://localhost:8080/callback".to_string(),
+            "test-client-secret".to_string(),
+            "http://localhost:8080".to_string(),
             vec!["scope1".to_string(), "scope2".to_string()],
         );
 
         assert_eq!(config.client_id, "test-client-id");
-        assert_eq!(config.redirect_uri, "http://localhost:8080/callback");
+        assert_eq!(config.client_secret, "test-client-secret");
+        assert_eq!(config.redirect_uri, "http://localhost:8080");
         assert_eq!(config.scopes, vec!["scope1", "scope2"]);
     }
 
@@ -203,10 +200,12 @@ mod tests {
     fn oauth_config_default_gdrive() {
         let config = OAuthConfig::default_gdrive(
             "test-client-id".to_string(),
-            "http://localhost:8080/callback".to_string(),
+            "test-client-secret".to_string(),
         );
 
         assert_eq!(config.client_id, "test-client-id");
+        assert_eq!(config.client_secret, "test-client-secret");
+        assert_eq!(config.redirect_uri, "http://localhost:8080");
         assert!(config
             .scopes
             .contains(&"https://www.googleapis.com/auth/drive.file".to_string()));
@@ -216,193 +215,77 @@ mod tests {
     }
 
     #[test]
-    fn pkce_challenge_generation() {
-        let pkce = PkceChallenge::generate();
-
-        // Verifier should be 128 characters
-        assert_eq!(pkce.verifier.len(), 128);
-
-        // Challenge should be base64url encoded (44 chars for SHA-256)
-        assert!(!pkce.challenge.is_empty());
-
-        // Verifier should only contain allowed characters
-        for c in pkce.verifier.chars() {
-            assert!(c.is_alphanumeric() || c == '-' || c == '.' || c == '_' || c == '~');
-        }
-    }
-
-    #[test]
-    fn pkce_challenges_are_unique() {
-        let pkce1 = PkceChallenge::generate();
-        let pkce2 = PkceChallenge::generate();
-
-        assert_ne!(pkce1.verifier, pkce2.verifier);
-        assert_ne!(pkce1.challenge, pkce2.challenge);
-    }
-
-    #[test]
-    fn pkce_challenge_deterministic() {
-        // Same verifier should produce same challenge
-        let verifier = "test-verifier-12345";
-        let challenge1 = PkceChallenge::generate_challenge(verifier);
-        let challenge2 = PkceChallenge::generate_challenge(verifier);
-
-        assert_eq!(challenge1, challenge2);
-    }
-
-    #[test]
-    fn authorization_url_basic() {
+    fn oauth_config_to_application_secret() {
         let config = OAuthConfig::new(
             "test-client-id".to_string(),
-            "http://localhost:8080/callback".to_string(),
-            vec!["scope1".to_string(), "scope2".to_string()],
-        );
-
-        let url = AuthorizationUrlBuilder::new(config)
-            .build()
-            .expect("Failed to build URL");
-
-        // Verify base URL
-        assert_eq!(url.scheme(), "https");
-        assert_eq!(url.host_str(), Some("accounts.google.com"));
-        assert_eq!(url.path(), "/o/oauth2/v2/auth");
-
-        // Verify query parameters
-        let query_pairs: Vec<_> = url.query_pairs().collect();
-        assert!(query_pairs
-            .iter()
-            .any(|(k, v)| k == "client_id" && v == "test-client-id"));
-        assert!(query_pairs
-            .iter()
-            .any(|(k, v)| k == "redirect_uri" && v == "http://localhost:8080/callback"));
-        assert!(query_pairs
-            .iter()
-            .any(|(k, v)| k == "response_type" && v == "code"));
-        assert!(query_pairs
-            .iter()
-            .any(|(k, v)| k == "scope" && v == "scope1 scope2"));
-        assert!(query_pairs
-            .iter()
-            .any(|(k, v)| k == "access_type" && v == "offline"));
-    }
-
-    #[test]
-    fn authorization_url_with_state() {
-        let config = OAuthConfig::new(
-            "test-client-id".to_string(),
-            "http://localhost:8080/callback".to_string(),
+            "test-client-secret".to_string(),
+            "http://localhost:9000".to_string(),
             vec!["scope1".to_string()],
         );
 
-        let url = AuthorizationUrlBuilder::new(config)
-            .with_state("random-state-123".to_string())
-            .build()
-            .expect("Failed to build URL");
+        let secret = config.to_application_secret();
 
-        let query_pairs: Vec<_> = url.query_pairs().collect();
-        assert!(query_pairs
-            .iter()
-            .any(|(k, v)| k == "state" && v == "random-state-123"));
+        assert_eq!(secret.client_id, "test-client-id");
+        assert_eq!(secret.client_secret, "test-client-secret");
+        assert_eq!(secret.token_uri, "https://oauth2.googleapis.com/token");
+        assert_eq!(secret.auth_uri, "https://accounts.google.com/o/oauth2/auth");
+        assert_eq!(secret.redirect_uris, vec!["http://localhost:9000"]);
     }
 
     #[test]
-    fn authorization_url_with_pkce() {
-        let config = OAuthConfig::new(
-            "test-client-id".to_string(),
-            "http://localhost:8080/callback".to_string(),
-            vec!["scope1".to_string()],
-        );
-
-        let pkce = PkceChallenge::generate();
-        let challenge = pkce.challenge.clone();
-
-        let url = AuthorizationUrlBuilder::new(config)
-            .with_pkce(pkce)
-            .build()
-            .expect("Failed to build URL");
-
-        let query_pairs: Vec<_> = url.query_pairs().collect();
-        assert!(query_pairs
-            .iter()
-            .any(|(k, v)| k == "code_challenge" && v == &challenge));
-        assert!(query_pairs
-            .iter()
-            .any(|(k, v)| k == "code_challenge_method" && v == "S256"));
-    }
-
-    #[test]
-    fn authorization_url_with_prompt() {
-        let config = OAuthConfig::new(
-            "test-client-id".to_string(),
-            "http://localhost:8080/callback".to_string(),
-            vec!["scope1".to_string()],
-        );
-
-        let url = AuthorizationUrlBuilder::new(config)
-            .with_prompt("consent".to_string())
-            .build()
-            .expect("Failed to build URL");
-
-        let query_pairs: Vec<_> = url.query_pairs().collect();
-        assert!(query_pairs
-            .iter()
-            .any(|(k, v)| k == "prompt" && v == "consent"));
-    }
-
-    #[test]
-    fn authorization_url_with_all_options() {
+    fn authenticator_builder_creation() {
         let config = OAuthConfig::default_gdrive(
-            "my-client-id".to_string(),
-            "http://localhost:8080/oauth/callback".to_string(),
+            "test-client-id".to_string(),
+            "test-client-secret".to_string(),
         );
 
-        let pkce = PkceChallenge::generate();
-        let challenge = pkce.challenge.clone();
+        let builder = OAuthAuthenticatorBuilder::new(config.clone());
 
-        let url = AuthorizationUrlBuilder::new(config)
-            .with_state("csrf-token-xyz".to_string())
-            .with_pkce(pkce)
-            .with_access_type("offline".to_string())
-            .with_prompt("consent".to_string())
-            .build()
-            .expect("Failed to build URL");
-
-        let query_pairs: Vec<_> = url.query_pairs().collect();
-
-        // Verify all parameters are present
-        assert!(query_pairs
-            .iter()
-            .any(|(k, v)| k == "client_id" && v == "my-client-id"));
-        assert!(query_pairs
-            .iter()
-            .any(|(k, v)| k == "state" && v == "csrf-token-xyz"));
-        assert!(query_pairs
-            .iter()
-            .any(|(k, v)| k == "code_challenge" && v == &challenge));
-        assert!(query_pairs
-            .iter()
-            .any(|(k, v)| k == "prompt" && v == "consent"));
-        assert!(query_pairs
-            .iter()
-            .any(|(k, v)| k == "access_type" && v == "offline"));
+        assert_eq!(builder.config.client_id, config.client_id);
+        assert!(builder.token_cache_path.is_none());
     }
 
     #[test]
-    fn authorization_url_custom_access_type() {
-        let config = OAuthConfig::new(
+    fn authenticator_builder_with_token_cache() {
+        let config = OAuthConfig::default_gdrive(
             "test-client-id".to_string(),
-            "http://localhost:8080/callback".to_string(),
-            vec!["scope1".to_string()],
+            "test-client-secret".to_string(),
         );
 
-        let url = AuthorizationUrlBuilder::new(config)
-            .with_access_type("online".to_string())
-            .build()
-            .expect("Failed to build URL");
+        let cache_path = PathBuf::from("/tmp/tokens.json");
+        let builder = OAuthAuthenticatorBuilder::new(config).with_token_cache(cache_path.clone());
 
-        let query_pairs: Vec<_> = url.query_pairs().collect();
-        assert!(query_pairs
-            .iter()
-            .any(|(k, v)| k == "access_type" && v == "online"));
+        assert_eq!(builder.token_cache_path, Some(cache_path));
+    }
+
+    #[test]
+    fn authenticator_builder_with_return_method() {
+        let config = OAuthConfig::default_gdrive(
+            "test-client-id".to_string(),
+            "test-client-secret".to_string(),
+        );
+
+        let builder = OAuthAuthenticatorBuilder::new(config)
+            .with_return_method(InstalledFlowReturnMethod::Interactive);
+
+        assert!(matches!(
+            builder.return_method,
+            InstalledFlowReturnMethod::Interactive
+        ));
+    }
+
+    #[tokio::test]
+    async fn authenticator_builder_builds() {
+        let config = OAuthConfig::default_gdrive(
+            "test-client-id".to_string(),
+            "test-client-secret".to_string(),
+        );
+
+        let builder = OAuthAuthenticatorBuilder::new(config);
+
+        // Building should succeed even without valid credentials
+        // (actual OAuth flow will fail, but builder construction shouldn't)
+        let result = builder.build().await;
+        assert!(result.is_ok());
     }
 }

@@ -50,7 +50,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None,
     );
     let account_id = db.with_conn(|conn| create_account(conn, &account))?;
-    println!("✓ Created test account: {} ({})\n", account.email, account_id);
+    println!(
+        "✓ Created test account: {} ({})\n",
+        account.email, account_id
+    );
 
     // CREATE: Add some test files
     println!("--- CREATE Operations ---");
@@ -183,9 +186,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // UPDATE: Modify files and their sync states
     println!("\n--- UPDATE Operations ---");
 
-    let mut file_to_sync = db.with_conn(|conn| get_file_by_id(conn, file1_id))?.unwrap();
+    let mut file_to_sync = db
+        .with_conn(|conn| get_file_by_id(conn, file1_id))?
+        .unwrap();
 
-    println!("Original state: {} {}", file_to_sync.state.icon(), file_to_sync.state);
+    println!(
+        "Original state: {} {}",
+        file_to_sync.state.icon(),
+        file_to_sync.state
+    );
 
     // Simulate syncing process
     file_to_sync.state = FileState::Syncing;
@@ -198,8 +207,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.with_conn(|conn| update_file(conn, &file_to_sync))?;
     println!("✓ Updated to Synced state with synced_at timestamp");
 
-    let synced_file = db.with_conn(|conn| get_file_by_id(conn, file1_id))?.unwrap();
-    println!("New state: {} {}", synced_file.state.icon(), synced_file.state);
+    let synced_file = db
+        .with_conn(|conn| get_file_by_id(conn, file1_id))?
+        .unwrap();
+    println!(
+        "New state: {} {}",
+        synced_file.state.icon(),
+        synced_file.state
+    );
     println!(
         "Synced at: {}",
         synced_file
@@ -210,7 +225,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Simulate a sync error on another file
     println!("\nSimulating sync error on file 2...");
-    let mut file_with_error = db.with_conn(|conn| get_file_by_id(conn, file2_id))?.unwrap();
+    let mut file_with_error = db
+        .with_conn(|conn| get_file_by_id(conn, file2_id))?
+        .unwrap();
     file_with_error.state = FileState::Error;
     db.with_conn(|conn| update_file(conn, &file_with_error))?;
     println!("✓ File 2 marked as Error state");
@@ -219,7 +236,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- Filtering by State ---");
 
     println!("Files in Synced state:");
-    let synced_files = db.with_conn(|conn| list_files(conn, &account_id, Some(FileState::Synced)))?;
+    let synced_files =
+        db.with_conn(|conn| list_files(conn, &account_id, Some(FileState::Synced)))?;
     println!("  Count: {}", synced_files.len());
     for file in &synced_files {
         println!("    - {} {}", file.state.icon(), file.name);
@@ -303,9 +321,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Demo Complete ===");
     println!("\nTo inspect the database directly, run:");
     println!("  sqlite3 {}", db_path);
-    println!(
-        "  sqlite> SELECT id, name, path, state, is_folder FROM files ORDER BY path;"
-    );
+    println!("  sqlite> SELECT id, name, path, state, is_folder FROM files ORDER BY path;");
     println!("\nTo clean up:");
     println!("  rm {}", db_path);
 

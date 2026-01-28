@@ -15,11 +15,3 @@
 
 /// Re-export the CloudProvider trait for convenience.
 pub use cloudsync_core::CloudProvider;
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn placeholder_test() {
-        assert!(true);
-    }
-}

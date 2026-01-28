@@ -12,11 +12,3 @@
 pub mod messages;
 
 pub use messages::{Request, Response};
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn placeholder_test() {
-        assert!(true);
-    }
-}

@@ -33,7 +33,7 @@ impl GoogleDriveClient {
     ///
     /// * `config` - OAuth configuration with client credentials
     /// * `token_cache_path` - Optional path to cache tokens (recommended)
-    /// * `return_method` - How to receive the OAuth callback (HTTPRedirect or Interactive)
+    /// * `return_method` - How to receive the OAuth callback (use HTTPRedirect for localhost)
     ///
     /// # Returns
     ///
@@ -109,7 +109,7 @@ mod tests {
         let result = GoogleDriveClient::new(
             config.clone(),
             Some(PathBuf::from("/tmp/test-tokens.json")),
-            InstalledFlowReturnMethod::Interactive,
+            InstalledFlowReturnMethod::HTTPRedirect,
         )
         .await;
 

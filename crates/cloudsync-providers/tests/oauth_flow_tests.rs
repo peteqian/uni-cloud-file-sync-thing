@@ -126,7 +126,7 @@ async fn test_token_exchange_invalid_credentials() {
     let client_result = GoogleDriveClient::new(
         config,
         Some(token_path),
-        InstalledFlowReturnMethod::Interactive,
+        InstalledFlowReturnMethod::HTTPRedirect,
     )
     .await;
 
@@ -404,7 +404,7 @@ async fn test_client_preserves_scopes_for_token_refresh() {
     let client = GoogleDriveClient::new(
         config,
         Some(token_path),
-        InstalledFlowReturnMethod::Interactive,
+        InstalledFlowReturnMethod::HTTPRedirect,
     )
     .await
     .unwrap();

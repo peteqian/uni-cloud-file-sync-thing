@@ -66,10 +66,13 @@ google-drive3 = "7.0.0"
 yup-oauth2 = "11.0"
 hyper = { version = "1.5", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
-hyper-rustls = { version = "0.27", features = ["http2"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http2", "ring", "rustls-native-certs"] }
 
 # Path handling
 directories = "5.0"
+
+# Environment variables
+dotenvy = "0.15"
 
 # Testing
 tempfile = "3.9"

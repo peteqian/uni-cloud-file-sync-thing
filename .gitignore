@@ -21,3 +21,7 @@ target
 #.idea/
 test_accounts.db*
 *.db
+
+# Environment variables with secrets
+.env
+.env.local

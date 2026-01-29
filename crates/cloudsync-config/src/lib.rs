@@ -124,6 +124,11 @@ pub struct SyncConfig {
 }
 
 impl SyncConfig {
+    /// Returns the sync folder for a specific provider (e.g., "gdrive").
+    pub fn provider_root(&self, provider_slug: &str) -> PathBuf {
+        self.root_folder.join(provider_slug)
+    }
+
     fn validate(&self) -> ConfigResult<()> {
         if self.cache_size_mb == 0 {
             return Err(ConfigError::Invalid(
@@ -147,8 +152,8 @@ impl Default for SyncConfig {
 
 fn default_root_folder() -> PathBuf {
     directories::UserDirs::new()
-        .and_then(|dirs| dirs.home_dir().join("CloudSync").into())
-        .unwrap_or_else(|| PathBuf::from("~/CloudSync"))
+        .and_then(|dirs| dirs.home_dir().join("UniCloudST").into())
+        .unwrap_or_else(|| PathBuf::from("~/UniCloudST"))
 }
 
 fn default_cache_size_mb() -> u32 {
@@ -207,6 +212,21 @@ mod tests {
         assert_eq!(config.sync.bandwidth_limit_down, 0);
         assert_eq!(config.sync.cache_size_mb, 1024);
         assert_eq!(config.conflicts.resolution, ConflictResolution::Prompt);
+    }
+
+    #[test]
+    fn default_root_folder_is_unicloudst() {
+        let config = Config::new();
+        let root_folder = config.sync.root_folder;
+        assert_eq!(root_folder.file_name().unwrap(), "UniCloudST");
+    }
+
+    #[test]
+    fn provider_root_is_under_root_folder() {
+        let config = Config::new();
+        let provider_root = config.sync.provider_root("gdrive");
+        assert_eq!(provider_root.file_name().unwrap(), "gdrive");
+        assert_eq!(provider_root.parent().unwrap(), config.sync.root_folder);
     }
 
     #[test]

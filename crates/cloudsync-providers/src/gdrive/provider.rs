@@ -11,7 +11,7 @@ use cloudsync_core::{
         ShareOptions,
     },
 };
-use google_drive3::{hyper_rustls, hyper_util, yup_oauth2, DriveHub};
+use google_drive3::{hyper_rustls, hyper_util, DriveHub};
 use std::path::Path;
 use url::Url;
 
@@ -23,6 +23,7 @@ use super::client::GoogleDriveClient;
 /// using the google-drive3 API.
 pub struct GoogleDriveProvider {
     client: GoogleDriveClient,
+    #[allow(dead_code)] // Will be used when implementing API methods
     hub: DriveHub<hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>>,
 }
 
@@ -49,6 +50,7 @@ impl GoogleDriveProvider {
     }
 
     /// Converts a Google Drive file resource to a CloudItem.
+    #[allow(dead_code)] // Will be used when implementing API methods
     fn file_to_cloud_item(file: &google_drive3::api::File) -> Result<CloudItem> {
         // Extract required fields with helpful error messages
         let id = file
@@ -132,8 +134,14 @@ impl CloudProvider for GoogleDriveProvider {
 
     async fn list_folder(&self, _path: &CloudPath) -> Result<Vec<CloudItem>> {
         // TODO: Implement folder listing using Files.list API
-        // For now, return empty list
-        Ok(vec![])
+        // Implementation pattern:
+        // 1. For root path: query "trashed = false and 'root' in parents"
+        // 2. For other paths: resolve path to folder ID, then query children
+        // 3. Use fields parameter to get: id,name,mimeType,size,md5Checksum,modifiedTime,createdTime
+        // 4. Convert each file using Self::file_to_cloud_item()
+        Err(Error::InvalidOperation(
+            "List folder not yet implemented".to_string(),
+        ))
     }
 
     async fn download(
@@ -193,7 +201,11 @@ impl CloudProvider for GoogleDriveProvider {
     }
 
     async fn get_metadata(&self, _id: &FileId) -> Result<CloudItem> {
-        // TODO: Implement metadata retrieval using Files.get
+        // TODO: Implement metadata retrieval using Files.get API
+        // Implementation pattern:
+        // 1. Call self.hub.files().get(id)
+        // 2. Use fields parameter: "id,name,mimeType,size,md5Checksum,modifiedTime,createdTime"
+        // 3. Convert result using Self::file_to_cloud_item()
         Err(Error::InvalidOperation(
             "Get metadata not yet implemented".to_string(),
         ))
@@ -255,11 +267,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_list_folder_returns_empty() {
+    async fn provider_list_folder_returns_not_implemented() {
         let provider = create_test_provider().await;
         let result = provider.list_folder(&CloudPath::root()).await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 0);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::InvalidOperation(_)));
     }
 
     #[tokio::test]

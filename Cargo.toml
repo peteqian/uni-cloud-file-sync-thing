@@ -67,6 +67,7 @@ yup-oauth2 = "12.1"
 hyper = { version = "1.5", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http2", "ring", "rustls-native-certs"] }
+http-body-util = "0.1"
 
 # Path handling
 directories = "5.0"

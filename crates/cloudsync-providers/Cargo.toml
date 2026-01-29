@@ -26,6 +26,9 @@ hyper-rustls.workspace = true
 keyring.workspace = true
 anyhow.workspace = true
 
+# HTTP body utilities for streaming downloads
+http-body-util.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
@@ -33,4 +36,3 @@ time = "0.3"
 dotenvy.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-http-body-util = "0.1"

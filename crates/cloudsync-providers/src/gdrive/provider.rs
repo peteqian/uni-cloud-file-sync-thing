@@ -171,14 +171,91 @@ impl CloudProvider for GoogleDriveProvider {
 
     async fn download(
         &self,
-        _id: &FileId,
-        _dest: &Path,
-        _progress: Option<ProgressSender>,
+        id: &FileId,
+        dest: &Path,
+        progress: Option<ProgressSender>,
     ) -> Result<()> {
-        // TODO: Implement file download using Files.get with alt=media
-        Err(Error::InvalidOperation(
-            "Download not yet implemented".to_string(),
-        ))
+        use http_body_util::BodyExt;
+        use std::io::Write;
+
+        // First, get file metadata to know the file size (for progress tracking)
+        let (_, file_metadata) = self
+            .hub
+            .files()
+            .get(&id.0)
+            .param("fields", "size,mimeType")
+            .doit()
+            .await
+            .map_err(|e| Error::ProviderApi {
+                provider: "gdrive".to_string(),
+                message: format!("Failed to get file metadata: {}", e),
+            })?;
+
+        // Check if this is a Google Docs file (which requires export instead of download)
+        if let Some(mime_type) = &file_metadata.mime_type {
+            if mime_type.starts_with("application/vnd.google-apps.") {
+                return Err(Error::InvalidOperation(
+                    "Google Docs files must be exported to a specific format (not yet supported)"
+                        .to_string(),
+                ));
+            }
+        }
+
+        let total_bytes = file_metadata.size.unwrap_or(0) as u64;
+
+        // Download the file content using alt=media
+        let request = self.hub.files().get(&id.0).param("alt", "media");
+
+        let (response, _file) = request.doit().await.map_err(|e| Error::ProviderApi {
+            provider: "gdrive".to_string(),
+            message: format!("Failed to download file: {}", e),
+        })?;
+
+        // Create the destination file
+        let mut file = std::fs::File::create(dest)?;
+
+        // Stream the response body to the file with progress tracking
+        let mut bytes_transferred = 0u64;
+        let mut body = response.into_body();
+
+        // Send initial progress if we have a sender
+        if let Some(ref tx) = progress {
+            let _ = tx
+                .send(cloudsync_core::types::TransferProgress {
+                    bytes_transferred: 0,
+                    total_bytes,
+                })
+                .await;
+        }
+
+        // Read and write in chunks
+        while let Some(chunk) = body.frame().await {
+            let chunk = chunk.map_err(|e| Error::ProviderApi {
+                provider: "gdrive".to_string(),
+                message: format!("Failed to read response chunk: {}", e),
+            })?;
+
+            if let Ok(data) = chunk.into_data() {
+                file.write_all(&data)?;
+
+                bytes_transferred += data.len() as u64;
+
+                // Send progress update if we have a sender
+                if let Some(ref tx) = progress {
+                    let _ = tx
+                        .send(cloudsync_core::types::TransferProgress {
+                            bytes_transferred,
+                            total_bytes,
+                        })
+                        .await;
+                }
+            }
+        }
+
+        // Ensure all data is written to disk
+        file.sync_all()?;
+
+        Ok(())
     }
 
     async fn upload(
@@ -300,13 +377,17 @@ mod tests {
     // integration tests that have valid credentials.
 
     #[tokio::test]
+    #[ignore] // Requires valid OAuth credentials and makes real API calls
     async fn provider_download_returns_not_implemented() {
+        // Note: Download is now implemented but requires real OAuth credentials
+        // This test is ignored to avoid blocking on OAuth flow during test runs
+        // Run integration tests with valid credentials to test download functionality
         let provider = create_test_provider().await;
         let result = provider
             .download(&FileId::new("test-id"), Path::new("/tmp/test-file"), None)
             .await;
+        // With invalid credentials, we expect an API error
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::InvalidOperation(_)));
     }
 
     #[tokio::test]

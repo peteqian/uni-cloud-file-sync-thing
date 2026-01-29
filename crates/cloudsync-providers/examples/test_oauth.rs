@@ -95,7 +95,11 @@ async fn main() -> anyhow::Result<()> {
     // Display token info (safely truncated)
     if let Some(token_str) = token.token() {
         let preview_len = 20.min(token_str.len());
-        info!("\nAccess token (first {} chars): {}...", preview_len, &token_str[..preview_len]);
+        info!(
+            "\nAccess token (first {} chars): {}...",
+            preview_len,
+            &token_str[..preview_len]
+        );
     }
 
     // Verify token is valid by making a simple API call
@@ -108,12 +112,14 @@ async fn main() -> anyhow::Result<()> {
         .enable_http1()
         .build();
 
-    let http_client = hyper_util::client::legacy::Client::builder(
-        hyper_util::rt::TokioExecutor::new()
-    ).build(https);
+    let http_client =
+        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+            .build(https);
 
     // Make a simple API call to verify authentication works
-    let token_str = token.token().ok_or_else(|| anyhow::anyhow!("No token available"))?;
+    let token_str = token
+        .token()
+        .ok_or_else(|| anyhow::anyhow!("No token available"))?;
 
     let req = hyper::Request::builder()
         .uri("https://www.googleapis.com/drive/v3/about?fields=user")

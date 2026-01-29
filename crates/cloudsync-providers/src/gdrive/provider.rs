@@ -6,10 +6,7 @@ use async_trait::async_trait;
 use cloudsync_core::{
     error::{Error, Result},
     provider::CloudProvider,
-    types::{
-        ChangeList, CloudItem, CloudPath, FileId, FileVersion, ProgressSender,
-        ShareOptions,
-    },
+    types::{ChangeList, CloudItem, CloudPath, FileId, FileVersion, ProgressSender, ShareOptions},
 };
 use google_drive3::{hyper_rustls, hyper_util, DriveHub};
 use std::path::Path;
@@ -40,9 +37,9 @@ impl GoogleDriveProvider {
             .enable_http2()
             .build();
 
-        let http_client = hyper_util::client::legacy::Client::builder(
-            hyper_util::rt::TokioExecutor::new()
-        ).build(https_connector);
+        let http_client =
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build(https_connector);
 
         let hub = DriveHub::new(http_client, client.authenticator().clone());
 
@@ -53,21 +50,15 @@ impl GoogleDriveProvider {
     #[allow(dead_code)] // Will be used when implementing API methods
     fn file_to_cloud_item(file: &google_drive3::api::File) -> Result<CloudItem> {
         // Extract required fields with helpful error messages
-        let id = file
-            .id
-            .as_ref()
-            .ok_or_else(|| Error::ProviderApi {
-                provider: "gdrive".to_string(),
-                message: "File missing ID field".to_string(),
-            })?;
+        let id = file.id.as_ref().ok_or_else(|| Error::ProviderApi {
+            provider: "gdrive".to_string(),
+            message: "File missing ID field".to_string(),
+        })?;
 
-        let name = file
-            .name
-            .as_ref()
-            .ok_or_else(|| Error::ProviderApi {
-                provider: "gdrive".to_string(),
-                message: "File missing name field".to_string(),
-            })?;
+        let name = file.name.as_ref().ok_or_else(|| Error::ProviderApi {
+            provider: "gdrive".to_string(),
+            message: "File missing name field".to_string(),
+        })?;
 
         // Determine if this is a folder
         let is_folder = file
@@ -77,14 +68,13 @@ impl GoogleDriveProvider {
             .unwrap_or(false);
 
         // Get modified time (required field in Drive API)
-        let modified = file
+        let modified = *file
             .modified_time
             .as_ref()
             .ok_or_else(|| Error::ProviderApi {
                 provider: "gdrive".to_string(),
                 message: "File missing modified_time field".to_string(),
-            })?
-            .clone();
+            })?;
 
         // Convert to CloudItem
         // Note: Google Drive doesn't have a traditional path hierarchy
@@ -99,7 +89,7 @@ impl GoogleDriveProvider {
             size: file.size.map(|s| s as u64),
             content_hash: file.md5_checksum.clone(),
             modified,
-            created: file.created_time.clone(),
+            created: file.created_time,
             mime_type: file.mime_type.clone(),
         })
     }
@@ -132,16 +122,51 @@ impl CloudProvider for GoogleDriveProvider {
         Ok(())
     }
 
-    async fn list_folder(&self, _path: &CloudPath) -> Result<Vec<CloudItem>> {
-        // TODO: Implement folder listing using Files.list API
-        // Implementation pattern:
-        // 1. For root path: query "trashed = false and 'root' in parents"
-        // 2. For other paths: resolve path to folder ID, then query children
-        // 3. Use fields parameter to get: id,name,mimeType,size,md5Checksum,modifiedTime,createdTime
-        // 4. Convert each file using Self::file_to_cloud_item()
-        Err(Error::InvalidOperation(
-            "List folder not yet implemented".to_string(),
-        ))
+    async fn list_folder(&self, path: &CloudPath) -> Result<Vec<CloudItem>> {
+        // For now, only support root path listing
+        // Path-to-ID resolution will be implemented later when needed
+        if !path.is_root() {
+            return Err(Error::InvalidOperation(
+                "Non-root path listing not yet supported - path-to-ID resolution required"
+                    .to_string(),
+            ));
+        }
+
+        // Build query to list files in root folder that aren't trashed
+        let query = "trashed = false and 'root' in parents";
+
+        // Specify fields to retrieve - only what we need for CloudItem
+        let fields = "files(id,name,mimeType,size,md5Checksum,modifiedTime,createdTime)";
+
+        // Execute the list request
+        let (_, file_list) = self
+            .hub
+            .files()
+            .list()
+            .q(query)
+            .param("fields", fields)
+            .doit()
+            .await
+            .map_err(|e| Error::ProviderApi {
+                provider: "gdrive".to_string(),
+                message: format!("Failed to list files: {}", e),
+            })?;
+
+        // Convert Google Drive files to CloudItems
+        let mut items = Vec::new();
+        if let Some(files) = file_list.files {
+            for file in files {
+                match Self::file_to_cloud_item(&file) {
+                    Ok(item) => items.push(item),
+                    Err(e) => {
+                        // Log the error but continue processing other files
+                        eprintln!("Warning: Failed to convert file to CloudItem: {}", e);
+                    }
+                }
+            }
+        }
+
+        Ok(items)
     }
 
     async fn download(
@@ -189,11 +214,7 @@ impl CloudProvider for GoogleDriveProvider {
         ))
     }
 
-    async fn create_share_link(
-        &self,
-        _id: &FileId,
-        _options: ShareOptions,
-    ) -> Result<Url> {
+    async fn create_share_link(&self, _id: &FileId, _options: ShareOptions) -> Result<Url> {
         // TODO: Implement share link creation using Permissions.create
         Err(Error::InvalidOperation(
             "Create share link not yet implemented".to_string(),
@@ -267,22 +288,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_list_folder_returns_not_implemented() {
+    async fn provider_list_folder_rejects_non_root_paths() {
         let provider = create_test_provider().await;
-        let result = provider.list_folder(&CloudPath::root()).await;
+        let result = provider.list_folder(&CloudPath::new("/subfolder")).await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::InvalidOperation(_)));
     }
+
+    // Note: Testing list_folder with root path requires real OAuth credentials
+    // and will make actual API calls. This should be tested manually or with
+    // integration tests that have valid credentials.
 
     #[tokio::test]
     async fn provider_download_returns_not_implemented() {
         let provider = create_test_provider().await;
         let result = provider
-            .download(
-                &FileId::new("test-id"),
-                Path::new("/tmp/test-file"),
-                None,
-            )
+            .download(&FileId::new("test-id"), Path::new("/tmp/test-file"), None)
             .await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::InvalidOperation(_)));

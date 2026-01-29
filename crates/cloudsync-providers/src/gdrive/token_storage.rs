@@ -208,12 +208,15 @@ impl SecureTokenStorage {
 
 #[async_trait]
 impl TokenStorage for SecureTokenStorage {
-    async fn set(&self, scopes: &[&str], token: TokenInfo) -> Result<(), yup_oauth2::error::TokenStorageError> {
+    async fn set(
+        &self,
+        scopes: &[&str],
+        token: TokenInfo,
+    ) -> Result<(), yup_oauth2::error::TokenStorageError> {
         // Serialize token info
-        let token_json = serde_json::to_string(&token)
-            .map_err(|e| yup_oauth2::error::TokenStorageError::Io(
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-            ))?;
+        let token_json = serde_json::to_string(&token).map_err(|e| {
+            yup_oauth2::error::TokenStorageError::Io(std::io::Error::other(e.to_string()))
+        })?;
 
         let stored_token = StoredToken {
             scopes: scopes.iter().map(|s| s.to_string()).collect(),
@@ -232,17 +235,17 @@ impl TokenStorage for SecureTokenStorage {
         cache.push(stored_token);
 
         // Serialize all tokens
-        let all_tokens_json = serde_json::to_string(&*cache)
-            .map_err(|e| yup_oauth2::error::TokenStorageError::Io(
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-            ))?;
+        let all_tokens_json = serde_json::to_string(&*cache).map_err(|e| {
+            yup_oauth2::error::TokenStorageError::Io(std::io::Error::other(e.to_string()))
+        })?;
 
         // Store in backend
         let key = Self::scopes_key(scopes);
-        self.store_token(&key, &all_tokens_json).await
-            .map_err(|e| yup_oauth2::error::TokenStorageError::Io(
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-            ))?;
+        self.store_token(&key, &all_tokens_json)
+            .await
+            .map_err(|e| {
+                yup_oauth2::error::TokenStorageError::Io(std::io::Error::other(e.to_string()))
+            })?;
 
         Ok(())
     }

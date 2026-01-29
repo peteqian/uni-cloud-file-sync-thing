@@ -129,6 +129,13 @@ impl SyncConfig {
         self.root_folder.join(provider_slug)
     }
 
+    /// Ensures the provider root directory exists and returns its path.
+    pub fn ensure_provider_root(&self, provider_slug: &str) -> std::io::Result<PathBuf> {
+        let provider_root = self.provider_root(provider_slug);
+        std::fs::create_dir_all(&provider_root)?;
+        Ok(provider_root)
+    }
+
     fn validate(&self) -> ConfigResult<()> {
         if self.cache_size_mb == 0 {
             return Err(ConfigError::Invalid(
@@ -226,6 +233,22 @@ mod tests {
         let config = Config::new();
         let provider_root = config.sync.provider_root("gdrive");
         assert_eq!(provider_root.file_name().unwrap(), "gdrive");
+        assert_eq!(provider_root.parent().unwrap(), config.sync.root_folder);
+    }
+
+    #[test]
+    fn ensure_provider_root_creates_directories() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = Config::new();
+        config.sync.root_folder = temp_dir.path().join("UniCloudST");
+
+        let provider_root = config
+            .sync
+            .ensure_provider_root("gdrive")
+            .unwrap();
+
+        assert!(config.sync.root_folder.exists());
+        assert!(provider_root.exists());
         assert_eq!(provider_root.parent().unwrap(), config.sync.root_folder);
     }
 

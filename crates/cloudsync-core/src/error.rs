@@ -58,6 +58,9 @@ pub enum Error {
 
     #[error("Invalid operation: {0}")]
     InvalidOperation(String),
+
+    #[error("Cloud-native file cannot be downloaded (open in browser): {url}")]
+    CloudNativeFile { url: String },
 }
 
 /// A specialized Result type for CloudSync operations.

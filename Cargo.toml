@@ -61,6 +61,9 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 # URL handling
 url = { version = "2.5", features = ["serde"] }
 
+# Browser opening
+opener = "0.7"
+
 # Google Drive API
 google-drive3 = "7.0.0"
 yup-oauth2 = "12.1"

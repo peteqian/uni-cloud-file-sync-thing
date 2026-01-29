@@ -4,6 +4,7 @@
 
 use async_trait::async_trait;
 use cloudsync_core::{
+    browser::{CloudNativeUrlBuilder, GoogleDriveUrlBuilder},
     error::{Error, Result},
     provider::CloudProvider,
     types::{ChangeList, CloudItem, CloudPath, FileId, FileVersion, ProgressSender, ShareOptions},
@@ -191,13 +192,16 @@ impl CloudProvider for GoogleDriveProvider {
                 message: format!("Failed to get file metadata: {}", e),
             })?;
 
-        // Check if this is a Google Docs file (which requires export instead of download)
+        // Check if this is a Google Docs file (cloud-native file that should be opened in browser)
         if let Some(mime_type) = &file_metadata.mime_type {
-            if mime_type.starts_with("application/vnd.google-apps.") {
-                return Err(Error::InvalidOperation(
-                    "Google Docs files must be exported to a specific format (not yet supported)"
-                        .to_string(),
-                ));
+            let url_builder = GoogleDriveUrlBuilder;
+            if url_builder.is_cloud_native(mime_type) {
+                // Construct the web URL for this cloud-native file
+                if let Some(web_url) = url_builder.build_web_url(id, mime_type) {
+                    return Err(Error::CloudNativeFile {
+                        url: web_url.to_string(),
+                    });
+                }
             }
         }
 

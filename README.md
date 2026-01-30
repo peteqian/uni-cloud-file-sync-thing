@@ -47,4 +47,4 @@ cloudsync --refresh-interval 120    # Change refresh rate (seconds)
 
 ## License
 
-MIT OR Apache-2.0
+MIT

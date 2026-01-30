@@ -526,6 +526,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "cloudsync-core",
+ "directories",
  "dotenvy",
  "google-drive3",
  "http-body-util",
@@ -543,6 +544,19 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "yup-oauth2",
+]
+
+[[package]]
+name = "cloudsync-sync"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "cloudsync-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

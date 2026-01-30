@@ -7,6 +7,7 @@ members = [
     "crates/cloudsync-ipc",
     "crates/cloudsync-providers",
     "crates/cloudsync-daemon",
+    "crates/cloudsync-sync",
 ]
 
 [workspace.package]
@@ -87,6 +88,7 @@ cloudsync-config = { path = "crates/cloudsync-config" }
 cloudsync-db = { path = "crates/cloudsync-db" }
 cloudsync-ipc = { path = "crates/cloudsync-ipc" }
 cloudsync-providers = { path = "crates/cloudsync-providers" }
+cloudsync-sync = { path = "crates/cloudsync-sync" }
 
 [profile.release]
 lto = true

@@ -1,0 +1,20 @@
+[package]
+name = "cloudsync-sync"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cloudsync-core.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+serde.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+serde_json.workspace = true

@@ -7,7 +7,9 @@ use cloudsync_core::{
     browser::{CloudNativeUrlBuilder, GoogleDriveUrlBuilder},
     error::{Error, Result},
     provider::CloudProvider,
-    types::{Change, ChangeList, CloudItem, CloudPath, FileId, FileVersion, ProgressSender, ShareOptions},
+    types::{
+        Change, ChangeList, CloudItem, CloudPath, FileId, FileVersion, ProgressSender, ShareOptions,
+    },
 };
 use google_drive3::{hyper_rustls, hyper_util, DriveHub};
 use std::path::Path;
@@ -359,7 +361,10 @@ impl CloudProvider for GoogleDriveProvider {
                             Ok(item) => Some(item),
                             Err(e) => {
                                 // Log error but continue processing other changes
-                                eprintln!("Warning: Failed to convert changed file to CloudItem: {}", e);
+                                eprintln!(
+                                    "Warning: Failed to convert changed file to CloudItem: {}",
+                                    e
+                                );
                                 continue;
                             }
                         },
@@ -371,9 +376,7 @@ impl CloudProvider for GoogleDriveProvider {
                     file_id,
                     item,
                     deleted,
-                    timestamp: change
-                        .time
-                        .unwrap_or_else(chrono::Utc::now),
+                    timestamp: change.time.unwrap_or_else(chrono::Utc::now),
                 });
             }
         }

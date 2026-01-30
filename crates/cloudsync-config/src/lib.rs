@@ -242,10 +242,7 @@ mod tests {
         let mut config = Config::new();
         config.sync.root_folder = temp_dir.path().join("UniCloudST");
 
-        let provider_root = config
-            .sync
-            .ensure_provider_root("gdrive")
-            .unwrap();
+        let provider_root = config.sync.ensure_provider_root("gdrive").unwrap();
 
         assert!(config.sync.root_folder.exists());
         assert!(provider_root.exists());

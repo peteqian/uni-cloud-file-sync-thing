@@ -383,18 +383,16 @@ mod tests {
 
         // Store with broader scopes
         storage
-            .set(&vec!["scope1", "scope2", "scope3"], token_info.clone())
+            .set(&["scope1", "scope2", "scope3"], token_info.clone())
             .await
             .unwrap();
 
         // Should match subset
-        let retrieved = storage.get(&vec!["scope1", "scope2"]).await;
+        let retrieved = storage.get(&["scope1", "scope2"]).await;
         assert!(retrieved.is_some());
 
         // Should not match superset
-        let not_found = storage
-            .get(&vec!["scope1", "scope2", "scope3", "scope4"])
-            .await;
+        let not_found = storage.get(&["scope1", "scope2", "scope3", "scope4"]).await;
         assert!(not_found.is_none());
     }
 }

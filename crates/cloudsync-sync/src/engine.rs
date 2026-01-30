@@ -27,6 +27,7 @@ pub struct SyncEngine<P: CloudProvider> {
     provider: Arc<P>,
 
     /// Database for tracking file state and sync metadata.
+    #[allow(dead_code)] // TODO: Will be used when implementing database tracking
     db: Arc<Database>,
 
     /// Queue for sync operations.
@@ -69,7 +70,9 @@ impl<P: CloudProvider + Send + Sync> SyncEngine<P> {
             .provider
             .list_folder(provider_root)
             .await
-            .map_err(|e| Error::Sync(format!("Failed to list folder during initial sync: {}", e)))?;
+            .map_err(|e| {
+                Error::Sync(format!("Failed to list folder during initial sync: {}", e))
+            })?;
 
         info!("Found {} items to sync", items.len());
 
@@ -107,7 +110,10 @@ impl<P: CloudProvider + Send + Sync> SyncEngine<P> {
         // For now, just log it
         info!("Initial sync cursor: {}", change_list.cursor);
 
-        info!("Initial sync complete. Queued {} files for download", queued_count);
+        info!(
+            "Initial sync complete. Queued {} files for download",
+            queued_count
+        );
 
         Ok(queued_count)
     }
@@ -120,17 +126,14 @@ impl<P: CloudProvider + Send + Sync> SyncEngine<P> {
     ///
     /// Returns the tuple (queued_count, new_cursor)
     pub async fn refresh_sync(&self, cursor: Option<String>) -> Result<(usize, String)> {
-        info!(
-            "Starting refresh sync for {}",
-            self.provider.display_name()
-        );
+        info!("Starting refresh sync for {}", self.provider.display_name());
 
         let mut current_cursor = cursor;
         let mut total_queued = 0;
-        let mut final_cursor = String::new();
 
         // Keep fetching changes until we've processed all batches
-        loop {
+        // The loop returns the final cursor when done
+        let final_cursor = loop {
             let change_list = self
                 .provider
                 .get_changes(current_cursor.as_deref())
@@ -177,20 +180,20 @@ impl<P: CloudProvider + Send + Sync> SyncEngine<P> {
                 self.queue.push(operation).await;
                 total_queued += 1;
 
-                debug!("Queued download for changed file: {} ({})", item.name, item.id);
+                debug!(
+                    "Queued download for changed file: {} ({})",
+                    item.name, item.id
+                );
             }
 
-            // Store the cursor for the next iteration or final return
-            final_cursor = change_list.cursor;
-
-            // If there are no more changes, break the loop
+            // If there are no more changes, return the cursor
             if !change_list.has_more {
-                break;
+                break change_list.cursor;
             }
 
             // Continue with the next page of changes
-            current_cursor = Some(final_cursor.clone());
-        }
+            current_cursor = Some(change_list.cursor);
+        };
 
         info!(
             "Refresh sync complete. Queued {} files for download",
@@ -315,10 +318,6 @@ impl<P: CloudProvider + Send + Sync> SyncEngine<P> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use cloudsync_core::types::{AccountId, CloudPath};
-    use std::sync::Arc;
-
     // Note: Full integration tests will be added once we have a mock provider
     // For now, we just test that the engine can be constructed
 

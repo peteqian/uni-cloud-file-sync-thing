@@ -16,6 +16,10 @@ pub enum Error {
     #[error("Operation with ID {0} not found in queue")]
     OperationNotFound(String),
 
+    /// Sync orchestration error.
+    #[error("Sync error: {0}")]
+    Sync(String),
+
     /// Other errors.
     #[error("{0}")]
     Other(String),

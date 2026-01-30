@@ -9,11 +9,13 @@ rust-version.workspace = true
 
 [dependencies]
 cloudsync-core.workspace = true
+cloudsync-db.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
 serde.workspace = true
 uuid.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

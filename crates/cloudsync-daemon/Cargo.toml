@@ -15,11 +15,15 @@ cloudsync-config.workspace = true
 cloudsync-db.workspace = true
 cloudsync-ipc.workspace = true
 cloudsync-providers.workspace = true
+cloudsync-sync.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+dotenvy.workspace = true
+directories.workspace = true
+yup-oauth2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

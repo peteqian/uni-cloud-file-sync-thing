@@ -488,10 +488,14 @@ dependencies = [
  "cloudsync-db",
  "cloudsync-ipc",
  "cloudsync-providers",
+ "cloudsync-sync",
+ "directories",
+ "dotenvy",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "yup-oauth2",
 ]
 
 [[package]]
@@ -526,7 +530,6 @@ dependencies = [
  "async-trait",
  "chrono",
  "cloudsync-core",
- "directories",
  "dotenvy",
  "google-drive3",
  "http-body-util",
@@ -552,10 +555,12 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "cloudsync-core",
+ "cloudsync-db",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
  "uuid",
 ]
 

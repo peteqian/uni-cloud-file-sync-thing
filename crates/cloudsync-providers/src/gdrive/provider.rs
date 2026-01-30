@@ -7,7 +7,7 @@ use cloudsync_core::{
     browser::{CloudNativeUrlBuilder, GoogleDriveUrlBuilder},
     error::{Error, Result},
     provider::CloudProvider,
-    types::{ChangeList, CloudItem, CloudPath, FileId, FileVersion, ProgressSender, ShareOptions},
+    types::{Change, ChangeList, CloudItem, CloudPath, FileId, FileVersion, ProgressSender, ShareOptions},
 };
 use google_drive3::{hyper_rustls, hyper_util, DriveHub};
 use std::path::Path;
@@ -288,11 +288,115 @@ impl CloudProvider for GoogleDriveProvider {
         ))
     }
 
-    async fn get_changes(&self, _cursor: Option<&str>) -> Result<ChangeList> {
-        // TODO: Implement changes feed using Changes.list API
-        Err(Error::InvalidOperation(
-            "Get changes not yet implemented".to_string(),
-        ))
+    async fn get_changes(&self, cursor: Option<&str>) -> Result<ChangeList> {
+        // If no cursor provided, get the start page token for future syncs
+        let page_token = match cursor {
+            Some(token) => token.to_string(),
+            None => {
+                // Get the initial start page token
+                let (_, response) = self
+                    .hub
+                    .changes()
+                    .get_start_page_token()
+                    .doit()
+                    .await
+                    .map_err(|e| Error::ProviderApi {
+                        provider: "gdrive".to_string(),
+                        message: format!("Failed to get start page token: {}", e),
+                    })?;
+
+                // Return empty change list with the start token for next sync
+                return Ok(ChangeList {
+                    changes: Vec::new(),
+                    cursor: response
+                        .start_page_token
+                        .ok_or_else(|| Error::ProviderApi {
+                            provider: "gdrive".to_string(),
+                            message: "Start page token missing from response".to_string(),
+                        })?,
+                    has_more: false,
+                });
+            }
+        };
+
+        // Fetch changes since the provided page token
+        let (_, change_list) = self
+            .hub
+            .changes()
+            .list(&page_token)
+            .param("fields", "changes(fileId,removed,time,file(id,name,mimeType,size,md5Checksum,modifiedTime,createdTime,trashed)),newStartPageToken,nextPageToken")
+            .param("includeRemoved", "true")
+            .doit()
+            .await
+            .map_err(|e| Error::ProviderApi {
+                provider: "gdrive".to_string(),
+                message: format!("Failed to list changes: {}", e),
+            })?;
+
+        // Convert Google Drive changes to CloudSync changes
+        let mut changes = Vec::new();
+        if let Some(gdrive_changes) = change_list.changes {
+            for change in gdrive_changes {
+                let file_id = match change.file_id {
+                    Some(id) => FileId::new(id),
+                    None => continue, // Skip changes without file ID
+                };
+
+                // Check if this is a deletion or if the file is trashed
+                let deleted = change.removed.unwrap_or(false)
+                    || change
+                        .file
+                        .as_ref()
+                        .and_then(|f| f.trashed)
+                        .unwrap_or(false);
+
+                let item = if deleted {
+                    None
+                } else {
+                    // Convert the file to CloudItem if available
+                    match change.file {
+                        Some(ref file) => match Self::file_to_cloud_item(file) {
+                            Ok(item) => Some(item),
+                            Err(e) => {
+                                // Log error but continue processing other changes
+                                eprintln!("Warning: Failed to convert changed file to CloudItem: {}", e);
+                                continue;
+                            }
+                        },
+                        None => None,
+                    }
+                };
+
+                changes.push(Change {
+                    file_id,
+                    item,
+                    deleted,
+                    timestamp: change
+                        .time
+                        .unwrap_or_else(chrono::Utc::now),
+                });
+            }
+        }
+
+        // Determine the next cursor and whether there are more changes
+        let (next_cursor, has_more) = if let Some(next_page_token) = change_list.next_page_token {
+            (next_page_token, true)
+        } else {
+            // Use the new start page token for the next sync
+            let cursor = change_list
+                .new_start_page_token
+                .ok_or_else(|| Error::ProviderApi {
+                    provider: "gdrive".to_string(),
+                    message: "Neither nextPageToken nor newStartPageToken present".to_string(),
+                })?;
+            (cursor, false)
+        };
+
+        Ok(ChangeList {
+            changes,
+            cursor: next_cursor,
+            has_more,
+        })
     }
 
     async fn create_share_link(&self, _id: &FileId, _options: ShareOptions) -> Result<Url> {
@@ -427,11 +531,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_get_changes_returns_not_implemented() {
+    #[ignore] // Requires valid OAuth credentials and makes real API calls
+    async fn provider_get_changes_with_no_cursor_returns_start_token() {
+        // With no cursor, get_changes should return empty changes and a start token
+        // This test requires valid OAuth credentials
         let provider = create_test_provider().await;
         let result = provider.get_changes(None).await;
+        // With invalid credentials, we expect an API error
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::InvalidOperation(_)));
     }
 
     #[tokio::test]

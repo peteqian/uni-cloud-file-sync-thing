@@ -58,6 +58,20 @@ impl CloudSyncPaths {
         self.data_dir().join("cloudsync.db")
     }
 
+    /// Returns the database file path (alias for database_file).
+    ///
+    /// Example: `~/.local/share/cloudsync/cloudsync.db`
+    pub fn database_path(&self) -> PathBuf {
+        self.database_file()
+    }
+
+    /// Returns the OAuth token cache path.
+    ///
+    /// Example: `~/.local/share/cloudsync/tokens.json`
+    pub fn token_cache_path(&self) -> PathBuf {
+        self.data_dir().join("tokens.json")
+    }
+
     /// Returns the IPC socket path.
     ///
     /// On Linux: `/run/user/$UID/cloudsync.sock` or `/tmp/cloudsync-$UID.sock`

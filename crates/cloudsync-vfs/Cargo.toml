@@ -1,0 +1,38 @@
+[package]
+name = "cloudsync-vfs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# FUSE filesystem
+fuser = "0.16"
+libc = "0.2"
+
+# Internal crates
+cloudsync-core.workspace = true
+cloudsync-db.workspace = true
+cloudsync-providers.workspace = true
+
+# Async runtime
+tokio.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Time handling
+chrono.workspace = true
+
+# Path handling
+directories.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tracing-subscriber.workspace = true

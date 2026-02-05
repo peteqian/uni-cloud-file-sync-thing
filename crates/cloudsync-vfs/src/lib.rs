@@ -37,7 +37,8 @@ pub fn mount(mount_point: &Path, provider_id: &str) -> Result<MountHandle> {
     let options = vec![
         fuser::MountOption::FSName(format!("cloudsync-{}", provider_id)),
         fuser::MountOption::AutoUnmount,
-        fuser::MountOption::AllowOther,
+        // Note: AllowOther requires 'user_allow_other' in /etc/fuse.conf
+        // Uncomment if needed: fuser::MountOption::AllowOther,
     ];
 
     // Clone mount point for both thread and handle

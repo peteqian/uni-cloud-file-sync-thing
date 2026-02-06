@@ -9,11 +9,14 @@
 //! 4. Unmount when done
 
 use anyhow::Result;
+use cloudsync_core::types::{AccountId, ProviderId};
+use cloudsync_db::{
+    accounts, Database, Migration, ACCOUNTS_MIGRATION, FILES_MIGRATION, VFS_INODES_MIGRATION,
+};
 use cloudsync_vfs;
 use std::time::Duration;
 use tempfile::TempDir;
 use tracing::{info, Level};
-use tracing_subscriber;
 
 fn main() -> Result<()> {
     // Initialize logging
@@ -29,13 +32,45 @@ fn main() -> Result<()> {
     let mount_point = temp_dir.path().join("mount");
     std::fs::create_dir(&mount_point)?;
 
+    // Create in-memory DB with all migrations
+    let db = Database::in_memory_with_migrations(vec![
+        Migration {
+            version: 1,
+            description: "Create accounts table",
+            sql: ACCOUNTS_MIGRATION,
+        },
+        Migration {
+            version: 2,
+            description: "Create files table",
+            sql: FILES_MIGRATION,
+        },
+        Migration {
+            version: 3,
+            description: "Create vfs_inodes table",
+            sql: VFS_INODES_MIGRATION,
+        },
+    ])?;
+
+    // Create a test account
+    let account_id = db.with_conn(|conn| {
+        let account = accounts::Account::new(
+            ProviderId::GoogleDrive,
+            "test@example.com".to_string(),
+            "token".to_string(),
+            None,
+            None,
+        );
+        accounts::create_account(conn, &account)?;
+        Ok::<AccountId, cloudsync_db::DbError>(account.id)
+    })?;
+
     info!("Mount point: {:?}", mount_point);
     info!("Attempting to mount...");
 
     // Try to mount the filesystem
-    match cloudsync_vfs::mount(&mount_point, "test-provider") {
+    match cloudsync_vfs::mount(&mount_point, "test-provider", db, account_id) {
         Ok(handle) => {
-            info!("✅ Mount successful!");
+            info!("Mount successful!");
             info!("Keeping filesystem mounted for 5 seconds...");
             info!("You can inspect it with: ls -la {:?}", mount_point);
 
@@ -50,18 +85,18 @@ fn main() -> Result<()> {
                     info!("  Found {} entries (should be empty for now)", count);
                 }
                 Err(e) => {
-                    info!("⚠️  Could not read directory: {}", e);
+                    info!("Could not read directory: {}", e);
                 }
             }
 
             info!("Unmounting...");
             drop(handle); // Explicit unmount
-            info!("✅ Unmounted successfully!");
+            info!("Unmounted successfully!");
 
             Ok(())
         }
         Err(e) => {
-            info!("❌ Mount failed: {}", e);
+            info!("Mount failed: {}", e);
             info!("");
             info!("This is expected if:");
             info!("  - FUSE is not installed (install: libfuse-dev or fuse3)");

@@ -6,6 +6,8 @@
 use crate::cache::{CachedFile, MetadataCache};
 use crate::inode::{InodeManager, FUSE_ROOT_INODE};
 use anyhow::Result;
+use cloudsync_core::types::AccountId;
+use cloudsync_db::Database;
 use fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request,
 };
@@ -24,14 +26,17 @@ pub struct CloudSyncFS {
 }
 
 impl CloudSyncFS {
-    /// Create a new CloudSync filesystem
-    pub fn new(provider_id: &str) -> Result<Self> {
+    /// Create a new CloudSync filesystem backed by SQLite
+    pub fn new(provider_id: &str, db: Database, account_id: AccountId) -> Result<Self> {
         info!("Initializing CloudSyncFS for provider: {}", provider_id);
+
+        let inode_manager = InodeManager::new(db.clone())?;
+        let metadata_cache = MetadataCache::new(db, account_id);
 
         Ok(Self {
             provider_id: provider_id.to_string(),
-            inode_manager: InodeManager::new(),
-            metadata_cache: MetadataCache::new(),
+            inode_manager,
+            metadata_cache,
         })
     }
 
@@ -102,19 +107,45 @@ impl Filesystem for CloudSyncFS {
 
         // Get parent file ID
         let parent_file_id = match self.inode_manager.get_file_id(parent) {
-            Some(id) => id,
-            None => {
+            Ok(Some(id)) => id,
+            Ok(None) | Err(_) => {
                 reply.error(libc::ENOENT);
                 return;
             }
         };
 
+        // Get parent's path to find children
+        let parent_path = match self.metadata_cache.get(&parent_file_id) {
+            Ok(Some(f)) => f.path,
+            _ => {
+                // Root directory has no entry in files table
+                if parent == FUSE_ROOT_INODE {
+                    "/".to_string()
+                } else {
+                    reply.error(libc::ENOENT);
+                    return;
+                }
+            }
+        };
+
         // Search for file in parent's children
-        let children = self.metadata_cache.get_children(&parent_file_id);
+        let children = match self.metadata_cache.get_children(&parent_path) {
+            Ok(c) => c,
+            Err(_) => {
+                reply.error(libc::EIO);
+                return;
+            }
+        };
 
         for child in children {
             if child.name == name_str {
-                let inode = self.inode_manager.get_or_allocate(&child.file_id);
+                let inode = match self.inode_manager.get_or_allocate(&child.file_id) {
+                    Ok(i) => i,
+                    Err(_) => {
+                        reply.error(libc::EIO);
+                        return;
+                    }
+                };
                 let attr = self.cached_file_to_attr(&child, inode);
                 reply.entry(&TTL, &attr, 0);
                 return;
@@ -136,16 +167,16 @@ impl Filesystem for CloudSyncFS {
 
         // Get file from cache
         let file_id = match self.inode_manager.get_file_id(ino) {
-            Some(id) => id,
-            None => {
+            Ok(Some(id)) => id,
+            Ok(None) | Err(_) => {
                 reply.error(libc::ENOENT);
                 return;
             }
         };
 
         let file = match self.metadata_cache.get(&file_id) {
-            Some(f) => f,
-            None => {
+            Ok(Some(f)) => f,
+            Ok(None) | Err(_) => {
                 reply.error(libc::ENOENT);
                 return;
             }
@@ -166,12 +197,24 @@ impl Filesystem for CloudSyncFS {
     ) {
         debug!("readdir(ino={}, offset={})", ino, offset);
 
-        // Get directory file ID
-        let dir_file_id = match self.inode_manager.get_file_id(ino) {
-            Some(id) => id,
-            None => {
-                reply.error(libc::ENOENT);
-                return;
+        // Get directory file ID and path
+        let dir_path = if ino == FUSE_ROOT_INODE {
+            "/".to_string()
+        } else {
+            let dir_file_id = match self.inode_manager.get_file_id(ino) {
+                Ok(Some(id)) => id,
+                Ok(None) | Err(_) => {
+                    reply.error(libc::ENOENT);
+                    return;
+                }
+            };
+
+            match self.metadata_cache.get(&dir_file_id) {
+                Ok(Some(f)) => f.path,
+                Ok(None) | Err(_) => {
+                    reply.error(libc::ENOENT);
+                    return;
+                }
             }
         };
 
@@ -182,9 +225,19 @@ impl Filesystem for CloudSyncFS {
         ];
 
         // Add children
-        let children = self.metadata_cache.get_children(&dir_file_id);
+        let children = match self.metadata_cache.get_children(&dir_path) {
+            Ok(c) => c,
+            Err(_) => {
+                reply.error(libc::EIO);
+                return;
+            }
+        };
+
         for child in children {
-            let child_ino = self.inode_manager.get_or_allocate(&child.file_id);
+            let child_ino = match self.inode_manager.get_or_allocate(&child.file_id) {
+                Ok(i) => i,
+                Err(_) => continue,
+            };
             let kind = if child.is_directory {
                 FileType::Directory
             } else {
@@ -219,16 +272,16 @@ impl Filesystem for CloudSyncFS {
 
         // Get file from cache
         let file_id = match self.inode_manager.get_file_id(ino) {
-            Some(id) => id,
-            None => {
+            Ok(Some(id)) => id,
+            Ok(None) | Err(_) => {
                 reply.error(libc::ENOENT);
                 return;
             }
         };
 
         let file = match self.metadata_cache.get(&file_id) {
-            Some(f) => f,
-            None => {
+            Ok(Some(f)) => f,
+            Ok(None) | Err(_) => {
                 reply.error(libc::ENOENT);
                 return;
             }
@@ -241,7 +294,6 @@ impl Filesystem for CloudSyncFS {
         }
 
         // TODO: Implement actual file download and caching
-        // For now, return empty data as this is just a skeleton
         warn!(
             "read() called but download not implemented yet for file: {}",
             file.name
@@ -255,17 +307,86 @@ impl Filesystem for CloudSyncFS {
 mod tests {
     use super::*;
     use crate::cache::CacheState;
-    use cloudsync_core::FileId;
+    use chrono::Utc;
+    use cloudsync_core::types::{CloudPath, FileId, ProviderId};
+    use cloudsync_db::{
+        accounts, create_file, Migration, ACCOUNTS_MIGRATION, FILES_MIGRATION, VFS_INODES_MIGRATION,
+    };
+
+    fn setup_test_db() -> (Database, AccountId) {
+        let db = Database::in_memory_with_migrations(vec![
+            Migration {
+                version: 1,
+                description: "Create accounts table",
+                sql: ACCOUNTS_MIGRATION,
+            },
+            Migration {
+                version: 2,
+                description: "Create files table",
+                sql: FILES_MIGRATION,
+            },
+            Migration {
+                version: 3,
+                description: "Create vfs_inodes table",
+                sql: VFS_INODES_MIGRATION,
+            },
+        ])
+        .unwrap();
+
+        let account_id = db
+            .with_conn(|conn| {
+                let account = accounts::Account::new(
+                    ProviderId::GoogleDrive,
+                    "test@example.com".to_string(),
+                    "token".to_string(),
+                    None,
+                    None,
+                );
+                accounts::create_account(conn, &account)?;
+                Ok(account.id)
+            })
+            .unwrap();
+
+        (db, account_id)
+    }
+
+    fn insert_file(
+        db: &Database,
+        account_id: &AccountId,
+        provider_id: &str,
+        path: &str,
+        name: &str,
+        is_folder: bool,
+        size: Option<u64>,
+    ) {
+        db.with_conn(|conn| {
+            let file = cloudsync_db::File::new(
+                account_id.clone(),
+                FileId::new(provider_id),
+                CloudPath::new(path),
+                name.to_string(),
+                size,
+                None,
+                is_folder,
+                Utc::now(),
+            );
+            create_file(conn, &file)?;
+            Ok(())
+        })
+        .unwrap();
+    }
 
     #[test]
     fn test_filesystem_creation() {
-        let fs = CloudSyncFS::new("test-provider");
+        let (db, account_id) = setup_test_db();
+        let fs = CloudSyncFS::new("test-provider", db, account_id);
         assert!(fs.is_ok());
     }
 
     #[test]
     fn test_root_attr() {
-        let fs = CloudSyncFS::new("test-provider").unwrap();
+        let (db, account_id) = setup_test_db();
+        let fs = CloudSyncFS::new("test-provider", db, account_id).unwrap();
         let attr = fs.get_root_attr();
 
         assert_eq!(attr.ino, FUSE_ROOT_INODE);
@@ -275,14 +396,14 @@ mod tests {
 
     #[test]
     fn test_cached_file_to_attr() {
-        let fs = CloudSyncFS::new("test-provider").unwrap();
+        let (db, account_id) = setup_test_db();
+        let fs = CloudSyncFS::new("test-provider", db, account_id).unwrap();
 
         let file = CachedFile {
             file_id: FileId::new("test-file"),
             name: "test.txt".to_string(),
-            parent_id: None,
+            path: "/test.txt".to_string(),
             size: 1024,
-            mime_type: "text/plain".to_string(),
             modified_time: chrono::Utc::now(),
             is_directory: false,
             state: CacheState::CloudOnly,
@@ -298,14 +419,14 @@ mod tests {
 
     #[test]
     fn test_directory_to_attr() {
-        let fs = CloudSyncFS::new("test-provider").unwrap();
+        let (db, account_id) = setup_test_db();
+        let fs = CloudSyncFS::new("test-provider", db, account_id).unwrap();
 
         let dir = CachedFile {
             file_id: FileId::new("dir1"),
             name: "documents".to_string(),
-            parent_id: None,
+            path: "/documents".to_string(),
             size: 0,
-            mime_type: "".to_string(),
             modified_time: chrono::Utc::now(),
             is_directory: true,
             state: CacheState::CloudOnly,
@@ -321,14 +442,14 @@ mod tests {
 
     #[test]
     fn test_blocks_calculation() {
-        let fs = CloudSyncFS::new("test-provider").unwrap();
+        let (db, account_id) = setup_test_db();
+        let fs = CloudSyncFS::new("test-provider", db, account_id).unwrap();
 
         let file = CachedFile {
             file_id: FileId::new("f1"),
             name: "data.bin".to_string(),
-            parent_id: None,
+            path: "/data.bin".to_string(),
             size: 1025, // Just over 2 blocks
-            mime_type: "application/octet-stream".to_string(),
             modified_time: chrono::Utc::now(),
             is_directory: false,
             state: CacheState::CloudOnly,
@@ -341,14 +462,14 @@ mod tests {
 
     #[test]
     fn test_zero_size_file_blocks() {
-        let fs = CloudSyncFS::new("test-provider").unwrap();
+        let (db, account_id) = setup_test_db();
+        let fs = CloudSyncFS::new("test-provider", db, account_id).unwrap();
 
         let file = CachedFile {
             file_id: FileId::new("empty"),
             name: "empty.txt".to_string(),
-            parent_id: None,
+            path: "/empty.txt".to_string(),
             size: 0,
-            mime_type: "text/plain".to_string(),
             modified_time: chrono::Utc::now(),
             is_directory: false,
             state: CacheState::CloudOnly,
@@ -359,57 +480,10 @@ mod tests {
         assert_eq!(attr.size, 0);
     }
 
-    /// Helper to create a CloudSyncFS with populated cache and inodes
-    fn create_populated_fs() -> CloudSyncFS {
-        let fs = CloudSyncFS::new("test-provider").unwrap();
-
-        // Insert files under root (root has FileId "root")
-        let file1 = CachedFile {
-            file_id: FileId::new("file1"),
-            name: "hello.txt".to_string(),
-            parent_id: Some(FileId::new("root")),
-            size: 512,
-            mime_type: "text/plain".to_string(),
-            modified_time: chrono::Utc::now(),
-            is_directory: false,
-            state: CacheState::CloudOnly,
-        };
-
-        let dir1 = CachedFile {
-            file_id: FileId::new("dir1"),
-            name: "photos".to_string(),
-            parent_id: Some(FileId::new("root")),
-            size: 0,
-            mime_type: "".to_string(),
-            modified_time: chrono::Utc::now(),
-            is_directory: true,
-            state: CacheState::CloudOnly,
-        };
-
-        let nested = CachedFile {
-            file_id: FileId::new("nested1"),
-            name: "pic.jpg".to_string(),
-            parent_id: Some(FileId::new("dir1")),
-            size: 2048,
-            mime_type: "image/jpeg".to_string(),
-            modified_time: chrono::Utc::now(),
-            is_directory: false,
-            state: CacheState::CloudOnly,
-        };
-
-        fs.metadata_cache.insert(file1);
-        fs.metadata_cache.insert(dir1);
-        fs.metadata_cache.insert(nested);
-
-        // Pre-allocate inodes for directories so readdir works
-        fs.inode_manager.get_or_allocate(&FileId::new("dir1"));
-
-        fs
-    }
-
     #[test]
     fn test_getattr_root_returns_directory() {
-        let fs = CloudSyncFS::new("test-provider").unwrap();
+        let (db, account_id) = setup_test_db();
+        let fs = CloudSyncFS::new("test-provider", db, account_id).unwrap();
         let attr = fs.get_root_attr();
 
         assert_eq!(attr.ino, FUSE_ROOT_INODE);
@@ -419,51 +493,110 @@ mod tests {
     }
 
     #[test]
-    fn test_populated_fs_inode_cache_consistency() {
-        let fs = create_populated_fs();
+    fn test_inode_and_cache_consistency() {
+        let (db, account_id) = setup_test_db();
+
+        insert_file(
+            &db,
+            &account_id,
+            "file1",
+            "/hello.txt",
+            "hello.txt",
+            false,
+            Some(512),
+        );
+        insert_file(&db, &account_id, "dir1", "/photos", "photos", true, None);
+
+        let fs = CloudSyncFS::new("test-provider", db, account_id).unwrap();
 
         // Root should be in inode manager
-        let root_file_id = fs.inode_manager.get_file_id(FUSE_ROOT_INODE);
+        let root_file_id = fs.inode_manager.get_file_id(FUSE_ROOT_INODE).unwrap();
         assert_eq!(root_file_id, Some(FileId::new("root")));
 
-        // Root children should be in cache
-        let children = fs.metadata_cache.get_children(&FileId::new("root"));
-        assert_eq!(children.len(), 2);
-
-        let names: Vec<&str> = children.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.contains(&"hello.txt"));
-        assert!(names.contains(&"photos"));
-    }
-
-    #[test]
-    fn test_nested_children_accessible() {
-        let fs = create_populated_fs();
-
-        let dir_children = fs.metadata_cache.get_children(&FileId::new("dir1"));
-        assert_eq!(dir_children.len(), 1);
-        assert_eq!(dir_children[0].name, "pic.jpg");
-        assert_eq!(dir_children[0].size, 2048);
-    }
-
-    #[test]
-    fn test_inode_manager_and_cache_agree() {
-        let fs = create_populated_fs();
-
-        // Allocate an inode for file1 through the manager
-        let inode = fs.inode_manager.get_or_allocate(&FileId::new("file1"));
-
-        // Look up the file_id from that inode
-        let file_id = fs.inode_manager.get_file_id(inode).unwrap();
-
-        // That file_id should exist in cache
-        let cached = fs.metadata_cache.get(&file_id).unwrap();
+        // Allocate an inode for file1 and verify cache agrees
+        let inode = fs
+            .inode_manager
+            .get_or_allocate(&FileId::new("file1"))
+            .unwrap();
+        let file_id = fs.inode_manager.get_file_id(inode).unwrap().unwrap();
+        let cached = fs.metadata_cache.get(&file_id).unwrap().unwrap();
         assert_eq!(cached.name, "hello.txt");
         assert_eq!(cached.size, 512);
     }
 
     #[test]
+    fn test_children_from_db() {
+        let (db, account_id) = setup_test_db();
+
+        insert_file(
+            &db,
+            &account_id,
+            "file1",
+            "/hello.txt",
+            "hello.txt",
+            false,
+            Some(512),
+        );
+        insert_file(&db, &account_id, "dir1", "/photos", "photos", true, None);
+        insert_file(
+            &db,
+            &account_id,
+            "nested1",
+            "/photos/pic.jpg",
+            "pic.jpg",
+            false,
+            Some(2048),
+        );
+
+        let fs = CloudSyncFS::new("test-provider", db, account_id).unwrap();
+
+        // Root children
+        let root_children = fs.metadata_cache.get_children("/").unwrap();
+        assert_eq!(root_children.len(), 2);
+        let names: Vec<&str> = root_children.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"hello.txt"));
+        assert!(names.contains(&"photos"));
+
+        // Nested children
+        let dir_children = fs.metadata_cache.get_children("/photos").unwrap();
+        assert_eq!(dir_children.len(), 1);
+        assert_eq!(dir_children[0].name, "pic.jpg");
+    }
+
+    #[test]
+    fn test_inode_persistence_across_fs_instances() {
+        let (db, account_id) = setup_test_db();
+        insert_file(
+            &db,
+            &account_id,
+            "file1",
+            "/hello.txt",
+            "hello.txt",
+            false,
+            Some(512),
+        );
+
+        let original_inode;
+        {
+            let fs = CloudSyncFS::new("test-provider", db.clone(), account_id.clone()).unwrap();
+            original_inode = fs
+                .inode_manager
+                .get_or_allocate(&FileId::new("file1"))
+                .unwrap();
+        }
+
+        // New FS instance should see the same inode
+        {
+            let fs = CloudSyncFS::new("test-provider", db, account_id).unwrap();
+            let restored_inode = fs.inode_manager.get_inode(&FileId::new("file1")).unwrap();
+            assert_eq!(restored_inode, Some(original_inode));
+        }
+    }
+
+    #[test]
     fn test_attr_timestamps_from_modified_time() {
-        let fs = CloudSyncFS::new("test-provider").unwrap();
+        let (db, account_id) = setup_test_db();
+        let fs = CloudSyncFS::new("test-provider", db, account_id).unwrap();
 
         let fixed_time = chrono::DateTime::parse_from_rfc3339("2025-06-15T12:00:00Z")
             .unwrap()
@@ -472,9 +605,8 @@ mod tests {
         let file = CachedFile {
             file_id: FileId::new("f1"),
             name: "test.txt".to_string(),
-            parent_id: None,
+            path: "/test.txt".to_string(),
             size: 100,
-            mime_type: "text/plain".to_string(),
             modified_time: fixed_time,
             is_directory: false,
             state: CacheState::CloudOnly,
@@ -484,7 +616,6 @@ mod tests {
 
         let expected_system_time = UNIX_EPOCH + Duration::from_secs(fixed_time.timestamp() as u64);
 
-        // atime, mtime, ctime, crtime should all equal modified_time
         assert_eq!(attr.mtime, expected_system_time);
         assert_eq!(attr.atime, expected_system_time);
         assert_eq!(attr.ctime, expected_system_time);

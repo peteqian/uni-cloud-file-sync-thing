@@ -1,191 +1,240 @@
 //! Inode management for the virtual filesystem
 //!
 //! Maps cloud file IDs to filesystem inodes (u64). FUSE requires stable inode
-//! numbers that persist across mounts.
+//! numbers that persist across mounts. Backed by SQLite for persistence.
 
+use anyhow::Result;
 use cloudsync_core::FileId;
-use std::collections::HashMap;
+use cloudsync_db::Database;
 use std::sync::{Arc, Mutex};
 
 /// FUSE root inode (required to be 1)
 pub const FUSE_ROOT_INODE: u64 = 1;
 
-/// Manages allocation and mapping of inodes
+/// Special FileId for the root directory
+const ROOT_FILE_ID: &str = "root";
+
+/// Manages allocation and mapping of inodes backed by SQLite.
+///
+/// The only in-memory state is the `next_inode` counter, which is restored
+/// from `MAX(inode)` on startup. All mappings live in the database.
 #[derive(Clone)]
 pub struct InodeManager {
-    inner: Arc<Mutex<InodeManagerInner>>,
-}
-
-struct InodeManagerInner {
-    /// Next inode to allocate
-    next_inode: u64,
-
-    /// Map from cloud FileId to inode
-    file_to_inode: HashMap<FileId, u64>,
-
-    /// Map from inode to FileId
-    inode_to_file: HashMap<u64, FileId>,
+    db: Database,
+    next_inode: Arc<Mutex<u64>>,
 }
 
 impl InodeManager {
-    /// Create a new inode manager
-    pub fn new() -> Self {
-        let mut inner = InodeManagerInner {
-            next_inode: FUSE_ROOT_INODE + 1, // Start after root
-            file_to_inode: HashMap::new(),
-            inode_to_file: HashMap::new(),
+    /// Create a new inode manager backed by the given database.
+    ///
+    /// Restores the next_inode counter from the database and ensures
+    /// the root inode mapping exists.
+    pub fn new(db: Database) -> Result<Self> {
+        let max_inode = db.with_conn(cloudsync_db::vfs_inodes::get_max_inode)?;
+
+        let next_inode = if max_inode == 0 {
+            FUSE_ROOT_INODE + 1
+        } else {
+            max_inode + 1
         };
 
-        // Reserve root inode (it represents the mount point root directory)
-        // We'll use a special FileId for root
-        let root_file_id = FileId::new("root");
-        inner
-            .file_to_inode
-            .insert(root_file_id.clone(), FUSE_ROOT_INODE);
-        inner.inode_to_file.insert(FUSE_ROOT_INODE, root_file_id);
+        let manager = Self {
+            db,
+            next_inode: Arc::new(Mutex::new(next_inode)),
+        };
 
-        Self {
-            inner: Arc::new(Mutex::new(inner)),
-        }
+        // Ensure root inode exists in DB
+        manager.db.with_conn(|conn| {
+            cloudsync_db::vfs_inodes::get_or_insert_inode(conn, ROOT_FILE_ID, || FUSE_ROOT_INODE)
+        })?;
+
+        Ok(manager)
     }
 
     /// Get or allocate an inode for a file ID
-    pub fn get_or_allocate(&self, file_id: &FileId) -> u64 {
-        let mut inner = self.inner.lock().unwrap();
+    pub fn get_or_allocate(&self, file_id: &FileId) -> Result<u64> {
+        let file_id_str = file_id.to_string();
+        let next_inode = Arc::clone(&self.next_inode);
 
-        if let Some(&inode) = inner.file_to_inode.get(file_id) {
-            return inode;
-        }
-
-        // Allocate new inode
-        let inode = inner.next_inode;
-        inner.next_inode += 1;
-
-        inner.file_to_inode.insert(file_id.clone(), inode);
-        inner.inode_to_file.insert(inode, file_id.clone());
-
-        inode
+        Ok(self.db.with_conn(|conn| {
+            let inode = cloudsync_db::vfs_inodes::get_or_insert_inode(conn, &file_id_str, || {
+                let mut counter = next_inode.lock().unwrap();
+                let inode = *counter;
+                *counter += 1;
+                inode
+            })?;
+            Ok(inode)
+        })?)
     }
 
     /// Look up file ID by inode
-    pub fn get_file_id(&self, inode: u64) -> Option<FileId> {
-        let inner = self.inner.lock().unwrap();
-        inner.inode_to_file.get(&inode).cloned()
+    pub fn get_file_id(&self, inode: u64) -> Result<Option<FileId>> {
+        Ok(self.db.with_conn(|conn| {
+            let file_id = cloudsync_db::vfs_inodes::get_file_id_by_inode(conn, inode)?;
+            Ok(file_id.map(FileId::new))
+        })?)
     }
 
     /// Look up inode by file ID
-    #[allow(dead_code)] // Will be used in future issues
-    pub fn get_inode(&self, file_id: &FileId) -> Option<u64> {
-        let inner = self.inner.lock().unwrap();
-        inner.file_to_inode.get(file_id).copied()
+    pub fn get_inode(&self, file_id: &FileId) -> Result<Option<u64>> {
+        Ok(self.db.with_conn(|conn| {
+            cloudsync_db::vfs_inodes::get_inode_by_file_id(conn, &file_id.to_string())
+        })?)
     }
 
     /// Remove a file from the inode map (when deleted)
-    #[allow(dead_code)] // Will be used in future issues
-    pub fn remove(&self, file_id: &FileId) {
-        let mut inner = self.inner.lock().unwrap();
-
-        if let Some(inode) = inner.file_to_inode.remove(file_id) {
-            inner.inode_to_file.remove(&inode);
-        }
+    pub fn remove(&self, file_id: &FileId) -> Result<()> {
+        Ok(self.db.with_conn(|conn| {
+            cloudsync_db::vfs_inodes::remove_inode(conn, &file_id.to_string())?;
+            Ok(())
+        })?)
     }
 
     /// Get the root inode
-    #[allow(dead_code)] // Will be used in future issues
     pub fn root_inode() -> u64 {
         FUSE_ROOT_INODE
-    }
-}
-
-impl Default for InodeManager {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cloudsync_db::{Migration, VFS_INODES_MIGRATION};
+
+    fn create_test_db() -> Database {
+        Database::in_memory_with_migrations(vec![Migration {
+            version: 1,
+            description: "Create vfs_inodes table",
+            sql: VFS_INODES_MIGRATION,
+        }])
+        .unwrap()
+    }
 
     #[test]
-    fn test_root_inode() {
-        let manager = InodeManager::new();
-        let root_id = FileId::new("root");
+    fn test_root_inode_exists_after_init() {
+        let db = create_test_db();
+        let manager = InodeManager::new(db).unwrap();
 
-        assert_eq!(manager.get_inode(&root_id), Some(FUSE_ROOT_INODE));
-        assert_eq!(manager.get_file_id(FUSE_ROOT_INODE), Some(root_id));
+        let root_id = FileId::new("root");
+        assert_eq!(manager.get_inode(&root_id).unwrap(), Some(FUSE_ROOT_INODE));
+        assert_eq!(manager.get_file_id(FUSE_ROOT_INODE).unwrap(), Some(root_id));
     }
 
     #[test]
     fn test_inode_allocation() {
-        let manager = InodeManager::new();
+        let db = create_test_db();
+        let manager = InodeManager::new(db).unwrap();
 
         let file1 = FileId::new("file1");
         let file2 = FileId::new("file2");
 
-        let inode1 = manager.get_or_allocate(&file1);
-        let inode2 = manager.get_or_allocate(&file2);
+        let inode1 = manager.get_or_allocate(&file1).unwrap();
+        let inode2 = manager.get_or_allocate(&file2).unwrap();
 
-        // Should get different inodes
         assert_ne!(inode1, inode2);
         assert!(inode1 > FUSE_ROOT_INODE);
         assert!(inode2 > FUSE_ROOT_INODE);
 
-        // Should be able to look up both ways
-        assert_eq!(manager.get_file_id(inode1), Some(file1.clone()));
-        assert_eq!(manager.get_inode(&file1), Some(inode1));
+        assert_eq!(manager.get_file_id(inode1).unwrap(), Some(file1.clone()));
+        assert_eq!(manager.get_inode(&file1).unwrap(), Some(inode1));
     }
 
     #[test]
     fn test_inode_stability() {
-        let manager = InodeManager::new();
+        let db = create_test_db();
+        let manager = InodeManager::new(db).unwrap();
         let file = FileId::new("stable");
 
-        let inode1 = manager.get_or_allocate(&file);
-        let inode2 = manager.get_or_allocate(&file);
+        let inode1 = manager.get_or_allocate(&file).unwrap();
+        let inode2 = manager.get_or_allocate(&file).unwrap();
 
-        // Should get same inode on repeated calls
         assert_eq!(inode1, inode2);
     }
 
     #[test]
+    fn test_stability_across_restarts() {
+        let db = create_test_db();
+
+        let file = FileId::new("persistent_file");
+        let original_inode;
+
+        // First "session"
+        {
+            let manager = InodeManager::new(db.clone()).unwrap();
+            original_inode = manager.get_or_allocate(&file).unwrap();
+        }
+
+        // Second "session" — simulates daemon restart
+        {
+            let manager = InodeManager::new(db).unwrap();
+            let restored_inode = manager.get_inode(&file).unwrap();
+            assert_eq!(restored_inode, Some(original_inode));
+        }
+    }
+
+    #[test]
+    fn test_counter_restored_on_restart() {
+        let db = create_test_db();
+
+        // First session: allocate some inodes
+        let last_inode;
+        {
+            let manager = InodeManager::new(db.clone()).unwrap();
+            manager.get_or_allocate(&FileId::new("a")).unwrap();
+            last_inode = manager.get_or_allocate(&FileId::new("b")).unwrap();
+        }
+
+        // Second session: new allocation should not collide
+        {
+            let manager = InodeManager::new(db).unwrap();
+            let new_inode = manager.get_or_allocate(&FileId::new("c")).unwrap();
+            assert!(new_inode > last_inode);
+        }
+    }
+
+    #[test]
     fn test_remove_inode() {
-        let manager = InodeManager::new();
+        let db = create_test_db();
+        let manager = InodeManager::new(db).unwrap();
         let file = FileId::new("to-remove");
 
-        let inode = manager.get_or_allocate(&file);
-        assert_eq!(manager.get_inode(&file), Some(inode));
+        let inode = manager.get_or_allocate(&file).unwrap();
+        assert_eq!(manager.get_inode(&file).unwrap(), Some(inode));
 
-        manager.remove(&file);
+        manager.remove(&file).unwrap();
 
-        assert_eq!(manager.get_inode(&file), None);
-        assert_eq!(manager.get_file_id(inode), None);
+        assert_eq!(manager.get_inode(&file).unwrap(), None);
+        assert_eq!(manager.get_file_id(inode).unwrap(), None);
     }
 
     #[test]
     fn test_remove_nonexistent_is_noop() {
-        let manager = InodeManager::new();
-        manager.remove(&FileId::new("ghost"));
-        // Should not panic, root should still be intact
+        let db = create_test_db();
+        let manager = InodeManager::new(db).unwrap();
+        manager.remove(&FileId::new("ghost")).unwrap();
+
+        // Root should still be intact
         assert_eq!(
-            manager.get_file_id(FUSE_ROOT_INODE),
+            manager.get_file_id(FUSE_ROOT_INODE).unwrap(),
             Some(FileId::new("root"))
         );
     }
 
     #[test]
     fn test_get_file_id_nonexistent_inode() {
-        let manager = InodeManager::new();
-        assert!(manager.get_file_id(9999).is_none());
+        let db = create_test_db();
+        let manager = InodeManager::new(db).unwrap();
+        assert!(manager.get_file_id(9999).unwrap().is_none());
     }
 
     #[test]
     fn test_inodes_are_sequential() {
-        let manager = InodeManager::new();
+        let db = create_test_db();
+        let manager = InodeManager::new(db).unwrap();
 
-        let inode_a = manager.get_or_allocate(&FileId::new("a"));
-        let inode_b = manager.get_or_allocate(&FileId::new("b"));
-        let inode_c = manager.get_or_allocate(&FileId::new("c"));
+        let inode_a = manager.get_or_allocate(&FileId::new("a")).unwrap();
+        let inode_b = manager.get_or_allocate(&FileId::new("b")).unwrap();
+        let inode_c = manager.get_or_allocate(&FileId::new("c")).unwrap();
 
         assert_eq!(inode_b, inode_a + 1);
         assert_eq!(inode_c, inode_b + 1);
@@ -193,26 +242,26 @@ mod tests {
 
     #[test]
     fn test_removed_inode_not_reused() {
-        let manager = InodeManager::new();
+        let db = create_test_db();
+        let manager = InodeManager::new(db).unwrap();
 
-        let inode_a = manager.get_or_allocate(&FileId::new("a"));
-        manager.remove(&FileId::new("a"));
+        let inode_a = manager.get_or_allocate(&FileId::new("a")).unwrap();
+        manager.remove(&FileId::new("a")).unwrap();
 
-        // New allocation should get a new inode, not reuse the old one
-        let inode_b = manager.get_or_allocate(&FileId::new("b"));
+        let inode_b = manager.get_or_allocate(&FileId::new("b")).unwrap();
         assert_ne!(inode_a, inode_b);
         assert!(inode_b > inode_a);
     }
 
     #[test]
     fn test_re_allocate_after_remove() {
-        let manager = InodeManager::new();
+        let db = create_test_db();
+        let manager = InodeManager::new(db).unwrap();
 
-        let original_inode = manager.get_or_allocate(&FileId::new("file"));
-        manager.remove(&FileId::new("file"));
+        let original_inode = manager.get_or_allocate(&FileId::new("file")).unwrap();
+        manager.remove(&FileId::new("file")).unwrap();
 
-        // Re-allocating the same file_id should get a different inode
-        let new_inode = manager.get_or_allocate(&FileId::new("file"));
+        let new_inode = manager.get_or_allocate(&FileId::new("file")).unwrap();
         assert_ne!(original_inode, new_inode);
     }
 
@@ -220,14 +269,5 @@ mod tests {
     fn test_root_inode_constant() {
         assert_eq!(InodeManager::root_inode(), 1);
         assert_eq!(FUSE_ROOT_INODE, 1);
-    }
-
-    #[test]
-    fn test_default_creates_valid_manager() {
-        let manager = InodeManager::default();
-        assert_eq!(
-            manager.get_file_id(FUSE_ROOT_INODE),
-            Some(FileId::new("root"))
-        );
     }
 }

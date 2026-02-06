@@ -26,6 +26,7 @@ pub mod connection;
 pub mod error;
 pub mod files;
 pub mod migrations;
+pub mod vfs_inodes;
 
 use rusqlite::Connection;
 use std::path::Path;
@@ -42,12 +43,14 @@ pub use files::{
     list_files, update_file, File, FILES_MIGRATION,
 };
 pub use migrations::{Migration, Migrator};
+pub use vfs_inodes::VFS_INODES_MIGRATION;
 
 /// High-level database interface with connection management and migrations.
 ///
 /// This provides a simple API for opening databases with automatic migration
 /// support. The database uses WAL mode for file-based databases to support
 /// concurrent readers.
+#[derive(Clone)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
 }

@@ -10,12 +10,7 @@
 //! cargo run --example list_and_download
 //! ```
 
-use cloudsync_core::{
-    browser::CloudNativeFile,
-    provider::CloudProvider,
-    types::CloudPath,
-    Error,
-};
+use cloudsync_core::{browser::CloudNativeFile, provider::CloudProvider, types::CloudPath, Error};
 use cloudsync_providers::gdrive::{GoogleDriveClient, GoogleDriveProvider, OAuthConfig};
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -30,8 +25,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Google Drive File Viewer & Downloader ===\n");
 
     // Get OAuth credentials from environment
-    let client_id = std::env::var("GOOGLE_CLIENT_ID")
-        .expect("GOOGLE_CLIENT_ID must be set in .env file");
+    let client_id =
+        std::env::var("GOOGLE_CLIENT_ID").expect("GOOGLE_CLIENT_ID must be set in .env file");
     let client_secret = std::env::var("GOOGLE_CLIENT_SECRET")
         .expect("GOOGLE_CLIENT_SECRET must be set in .env file");
 
@@ -41,22 +36,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = OAuthConfig::default_gdrive(client_id, client_secret);
 
     // Create client with token caching
-    let token_cache = directories::ProjectDirs::from("com", "cloudsync", "app")
-        .map(|dirs| {
-            let token_path = dirs.data_dir().join("gdrive_tokens.json");
-            // Ensure parent directory exists
-            if let Some(parent) = token_path.parent() {
-                std::fs::create_dir_all(parent).ok();
-            }
-            token_path
-        });
+    let token_cache = directories::ProjectDirs::from("com", "cloudsync", "app").map(|dirs| {
+        let token_path = dirs.data_dir().join("gdrive_tokens.json");
+        // Ensure parent directory exists
+        if let Some(parent) = token_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        token_path
+    });
 
-    let client = GoogleDriveClient::new(
-        config,
-        token_cache,
-        InstalledFlowReturnMethod::HTTPRedirect,
-    )
-    .await?;
+    let client =
+        GoogleDriveClient::new(config, token_cache, InstalledFlowReturnMethod::HTTPRedirect)
+            .await?;
 
     // Create provider
     let provider = GoogleDriveProvider::new(client).await?;
@@ -83,13 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "N/A".to_string()
         };
 
-        println!(
-            "{}. {} {} ({})",
-            i + 1,
-            icon,
-            item.name,
-            size_str
-        );
+        println!("{}. {} {} ({})", i + 1, icon, item.name, size_str);
         if let Some(mime) = &item.mime_type {
             println!("   Type: {}", mime);
         }
@@ -126,10 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dest = PathBuf::from(format!("/tmp/{}", selected_item.name));
     println!("Downloading to: {:?}", dest);
 
-    match provider
-        .download(&selected_item.id, &dest, None)
-        .await
-    {
+    match provider.download(&selected_item.id, &dest, None).await {
         Ok(()) => {
             println!("✓ Downloaded successfully to {:?}", dest);
         }

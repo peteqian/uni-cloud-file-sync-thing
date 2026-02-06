@@ -1,16 +1,17 @@
 //! Metadata cache for the virtual filesystem
 //!
-//! Stores file metadata (names, sizes, timestamps) without downloading file content.
-//! Backed by SQLite for persistence across mounts.
+//! Provides file metadata (names, sizes, timestamps) by querying the SQLite
+//! `files` table directly. No in-memory caching — SQLite WAL handles concurrent
+//! reads efficiently.
 
+use anyhow::Result;
 use chrono::{DateTime, Utc};
-use cloudsync_core::{CloudItem, FileId};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use cloudsync_core::file_state::FileState;
+use cloudsync_core::types::{AccountId, FileId};
+use cloudsync_db::Database;
 
-/// File state in the cache
+/// File state in the VFS layer
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Skeleton implementation - will be used in future issues
 pub enum CacheState {
     /// File metadata exists but content not downloaded
     CloudOnly,
@@ -22,407 +23,376 @@ pub enum CacheState {
     Modified,
 }
 
-/// Cached file entry
+/// Cached file entry — the VFS layer's view of file data
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Skeleton implementation - fields will be used in future issues
 pub struct CachedFile {
     pub file_id: FileId,
     pub name: String,
-    pub parent_id: Option<FileId>,
+    pub path: String,
     pub size: u64,
-    pub mime_type: String,
-    pub modified_time: DateTime<Utc>,
     pub is_directory: bool,
+    pub modified_time: DateTime<Utc>,
     pub state: CacheState,
 }
 
-/// Metadata cache manager
+/// Metadata cache backed by the `files` table in SQLite
 #[derive(Clone)]
 pub struct MetadataCache {
-    inner: Arc<Mutex<MetadataCacheInner>>,
-}
-
-struct MetadataCacheInner {
-    /// Map from FileId to cached metadata
-    files: HashMap<FileId, CachedFile>,
-
-    /// Directory contents: parent FileId -> list of child FileIds
-    children: HashMap<FileId, Vec<FileId>>,
+    db: Database,
+    account_id: AccountId,
 }
 
 impl MetadataCache {
-    /// Create a new metadata cache
-    pub fn new() -> Self {
-        let inner = MetadataCacheInner {
-            files: HashMap::new(),
-            children: HashMap::new(),
-        };
-
-        Self {
-            inner: Arc::new(Mutex::new(inner)),
-        }
+    /// Create a new metadata cache for the given account
+    pub fn new(db: Database, account_id: AccountId) -> Self {
+        Self { db, account_id }
     }
 
-    /// Add or update a file in the cache
-    #[allow(dead_code)] // Will be used in future issues
-    pub fn insert(&self, file: CachedFile) {
-        let mut inner = self.inner.lock().unwrap();
-
-        // Update children map if file has a parent
-        if let Some(parent_id) = &file.parent_id {
-            inner
-                .children
-                .entry(parent_id.clone())
-                .or_default()
-                .push(file.file_id.clone());
-        }
-
-        inner.files.insert(file.file_id.clone(), file);
+    /// Get a file by its provider file ID
+    pub fn get(&self, file_id: &FileId) -> Result<Option<CachedFile>> {
+        Ok(self.db.with_conn(|conn| {
+            let file = cloudsync_db::get_file_by_provider_id(conn, &self.account_id, file_id)?;
+            Ok(file.map(|f| db_file_to_cached_file(&f)))
+        })?)
     }
 
-    /// Get a file from the cache
-    pub fn get(&self, file_id: &FileId) -> Option<CachedFile> {
-        let inner = self.inner.lock().unwrap();
-        inner.files.get(file_id).cloned()
-    }
+    /// Get children of a directory by its path.
+    ///
+    /// Children are files whose path starts with `parent_path/` (one level deep).
+    pub fn get_children(&self, parent_path: &str) -> Result<Vec<CachedFile>> {
+        let account_id = self.account_id.clone();
+        let parent = parent_path.to_string();
 
-    /// Get children of a directory
-    pub fn get_children(&self, parent_id: &FileId) -> Vec<CachedFile> {
-        let inner = self.inner.lock().unwrap();
+        Ok(self.db.with_conn(move |conn| {
+            let all_files = cloudsync_db::list_files(conn, &account_id, None)?;
 
-        inner
-            .children
-            .get(parent_id)
-            .map(|child_ids| {
-                child_ids
-                    .iter()
-                    .filter_map(|id| inner.files.get(id).cloned())
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// Update the state of a file
-    #[allow(dead_code)] // Will be used in future issues
-    pub fn update_state(&self, file_id: &FileId, state: CacheState) {
-        let mut inner = self.inner.lock().unwrap();
-
-        if let Some(file) = inner.files.get_mut(file_id) {
-            file.state = state;
-        }
-    }
-
-    /// Remove a file from the cache
-    #[allow(dead_code)] // Will be used in future issues
-    pub fn remove(&self, file_id: &FileId) {
-        let mut inner = self.inner.lock().unwrap();
-
-        if let Some(file) = inner.files.remove(file_id) {
-            // Remove from parent's children list
-            if let Some(parent_id) = &file.parent_id {
-                if let Some(children) = inner.children.get_mut(parent_id) {
-                    children.retain(|id| id != file_id);
-                }
-            }
-
-            // Remove from children map if it's a directory
-            inner.children.remove(file_id);
-        }
-    }
-
-    /// Populate cache from cloud items
-    #[allow(dead_code)] // Will be used in future issues
-    pub fn populate_from_items(&self, items: Vec<CloudItem>, root_id: &FileId) {
-        for item in items {
-            let file = CachedFile {
-                file_id: item.id.clone(),
-                name: item.name,
-                parent_id: Some(root_id.clone()), // CloudItem doesn't have parent_id
-                size: item.size.unwrap_or(0),
-                mime_type: item.mime_type.unwrap_or_default(),
-                modified_time: item.modified,
-                is_directory: item.is_folder,
-                state: CacheState::CloudOnly,
+            let prefix = if parent == "/" {
+                "/".to_string()
+            } else {
+                format!("{}/", parent.trim_end_matches('/'))
             };
 
-            self.insert(file);
-        }
-    }
+            let children: Vec<CachedFile> = all_files
+                .into_iter()
+                .filter(|f| {
+                    let path = f.path.as_str();
+                    if !path.starts_with(&prefix) {
+                        return false;
+                    }
+                    // Only direct children (no further '/' after prefix)
+                    let remainder = &path[prefix.len()..];
+                    !remainder.contains('/')
+                })
+                .map(|f| db_file_to_cached_file(&f))
+                .collect();
 
-    /// Clear all cached entries
-    #[allow(dead_code)] // Will be used in future issues
-    pub fn clear(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.files.clear();
-        inner.children.clear();
+            Ok(children)
+        })?)
     }
 }
 
-impl Default for MetadataCache {
-    fn default() -> Self {
-        Self::new()
+/// Convert a database File to a VFS CachedFile
+fn db_file_to_cached_file(file: &cloudsync_db::File) -> CachedFile {
+    CachedFile {
+        file_id: file.provider_file_id.clone(),
+        name: file.name.clone(),
+        path: file.path.as_str().to_string(),
+        size: file.size.unwrap_or(0),
+        is_directory: file.is_folder,
+        modified_time: file.modified_at,
+        state: file_state_to_cache_state(&file.state),
+    }
+}
+
+/// Map database FileState to VFS CacheState
+fn file_state_to_cache_state(state: &FileState) -> CacheState {
+    match state {
+        FileState::Synced => CacheState::Cached,
+        FileState::Syncing => CacheState::Downloading,
+        FileState::OfflineModified => CacheState::Modified,
+        _ => CacheState::CloudOnly,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cloudsync_core::FileId;
+    use chrono::Utc;
+    use cloudsync_core::types::{CloudPath, ProviderId};
+    use cloudsync_db::{
+        accounts, create_file, Migration, ACCOUNTS_MIGRATION, FILES_MIGRATION, VFS_INODES_MIGRATION,
+    };
 
-    fn create_test_file(id: &str, name: &str, parent: Option<&str>) -> CachedFile {
-        CachedFile {
-            file_id: FileId::new(id),
-            name: name.to_string(),
-            parent_id: parent.map(FileId::new),
-            size: 1024,
-            mime_type: "text/plain".to_string(),
-            modified_time: Utc::now(),
-            is_directory: false,
-            state: CacheState::CloudOnly,
-        }
+    fn setup_test_db() -> (Database, AccountId) {
+        let db = Database::in_memory_with_migrations(vec![
+            Migration {
+                version: 1,
+                description: "Create accounts table",
+                sql: ACCOUNTS_MIGRATION,
+            },
+            Migration {
+                version: 2,
+                description: "Create files table",
+                sql: FILES_MIGRATION,
+            },
+            Migration {
+                version: 3,
+                description: "Create vfs_inodes table",
+                sql: VFS_INODES_MIGRATION,
+            },
+        ])
+        .unwrap();
+
+        let account_id = db
+            .with_conn(|conn| {
+                let account = accounts::Account::new(
+                    ProviderId::GoogleDrive,
+                    "test@example.com".to_string(),
+                    "token".to_string(),
+                    None,
+                    None,
+                );
+                accounts::create_account(conn, &account)?;
+                Ok(account.id)
+            })
+            .unwrap();
+
+        (db, account_id)
+    }
+
+    fn insert_file(
+        db: &Database,
+        account_id: &AccountId,
+        provider_id: &str,
+        path: &str,
+        name: &str,
+        is_folder: bool,
+        size: Option<u64>,
+    ) {
+        db.with_conn(|conn| {
+            let file = cloudsync_db::File::new(
+                account_id.clone(),
+                FileId::new(provider_id),
+                CloudPath::new(path),
+                name.to_string(),
+                size,
+                None,
+                is_folder,
+                Utc::now(),
+            );
+            create_file(conn, &file)?;
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]
-    fn test_insert_and_get() {
-        let cache = MetadataCache::new();
-        let file = create_test_file("file1", "test.txt", None);
+    fn test_get_returns_none_for_empty_db() {
+        let (db, account_id) = setup_test_db();
+        let cache = MetadataCache::new(db, account_id);
 
-        cache.insert(file.clone());
-
-        let retrieved = cache.get(&FileId::new("file1")).unwrap();
-        assert_eq!(retrieved.name, "test.txt");
+        let result = cache.get(&FileId::new("nonexistent")).unwrap();
+        assert!(result.is_none());
     }
 
     #[test]
-    fn test_get_children() {
-        let cache = MetadataCache::new();
+    fn test_get_returns_cached_file() {
+        let (db, account_id) = setup_test_db();
+        insert_file(
+            &db,
+            &account_id,
+            "f1",
+            "/docs/readme.md",
+            "readme.md",
+            false,
+            Some(256),
+        );
 
-        let parent = create_test_file("parent", "folder", None);
-        let child1 = create_test_file("child1", "file1.txt", Some("parent"));
-        let child2 = create_test_file("child2", "file2.txt", Some("parent"));
+        let cache = MetadataCache::new(db, account_id);
+        let file = cache.get(&FileId::new("f1")).unwrap().unwrap();
 
-        cache.insert(parent);
-        cache.insert(child1);
-        cache.insert(child2);
+        assert_eq!(file.file_id, FileId::new("f1"));
+        assert_eq!(file.name, "readme.md");
+        assert_eq!(file.size, 256);
+        assert!(!file.is_directory);
+    }
 
-        let children = cache.get_children(&FileId::new("parent"));
+    #[test]
+    fn test_get_folder() {
+        let (db, account_id) = setup_test_db();
+        insert_file(&db, &account_id, "d1", "/photos", "photos", true, None);
+
+        let cache = MetadataCache::new(db, account_id);
+        let folder = cache.get(&FileId::new("d1")).unwrap().unwrap();
+
+        assert!(folder.is_directory);
+        assert_eq!(folder.size, 0);
+        assert_eq!(folder.name, "photos");
+    }
+
+    #[test]
+    fn test_get_children_of_root() {
+        let (db, account_id) = setup_test_db();
+
+        insert_file(
+            &db,
+            &account_id,
+            "f1",
+            "/hello.txt",
+            "hello.txt",
+            false,
+            Some(100),
+        );
+        insert_file(&db, &account_id, "d1", "/photos", "photos", true, None);
+        // Nested file should NOT appear as root child
+        insert_file(
+            &db,
+            &account_id,
+            "f2",
+            "/photos/pic.jpg",
+            "pic.jpg",
+            false,
+            Some(2048),
+        );
+
+        let cache = MetadataCache::new(db, account_id);
+        let children = cache.get_children("/").unwrap();
+
         assert_eq!(children.len(), 2);
+        let names: Vec<&str> = children.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"hello.txt"));
+        assert!(names.contains(&"photos"));
     }
 
     #[test]
-    fn test_update_state() {
-        let cache = MetadataCache::new();
-        let file = create_test_file("file1", "test.txt", None);
+    fn test_get_children_of_subdirectory() {
+        let (db, account_id) = setup_test_db();
 
-        cache.insert(file);
-        assert_eq!(
-            cache.get(&FileId::new("file1")).unwrap().state,
-            CacheState::CloudOnly
+        insert_file(&db, &account_id, "d1", "/photos", "photos", true, None);
+        insert_file(
+            &db,
+            &account_id,
+            "f1",
+            "/photos/pic.jpg",
+            "pic.jpg",
+            false,
+            Some(2048),
+        );
+        insert_file(
+            &db,
+            &account_id,
+            "f2",
+            "/photos/video.mp4",
+            "video.mp4",
+            false,
+            Some(4096),
+        );
+        // Deeply nested should NOT appear
+        insert_file(
+            &db,
+            &account_id,
+            "f3",
+            "/photos/vacation/beach.jpg",
+            "beach.jpg",
+            false,
+            Some(1024),
         );
 
-        cache.update_state(&FileId::new("file1"), CacheState::Cached);
-        assert_eq!(
-            cache.get(&FileId::new("file1")).unwrap().state,
-            CacheState::Cached
-        );
+        let cache = MetadataCache::new(db, account_id);
+        let children = cache.get_children("/photos").unwrap();
+
+        assert_eq!(children.len(), 2);
+        let names: Vec<&str> = children.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"pic.jpg"));
+        assert!(names.contains(&"video.mp4"));
     }
 
     #[test]
-    fn test_remove() {
-        let cache = MetadataCache::new();
-        let file = create_test_file("file1", "test.txt", None);
+    fn test_get_children_empty_directory() {
+        let (db, account_id) = setup_test_db();
+        insert_file(&db, &account_id, "d1", "/empty", "empty", true, None);
 
-        cache.insert(file);
-        assert!(cache.get(&FileId::new("file1")).is_some());
+        let cache = MetadataCache::new(db, account_id);
+        let children = cache.get_children("/empty").unwrap();
 
-        cache.remove(&FileId::new("file1"));
-        assert!(cache.get(&FileId::new("file1")).is_none());
-    }
-
-    #[test]
-    fn test_clear() {
-        let cache = MetadataCache::new();
-        cache.insert(create_test_file("file1", "test1.txt", None));
-        cache.insert(create_test_file("file2", "test2.txt", None));
-
-        cache.clear();
-
-        assert!(cache.get(&FileId::new("file1")).is_none());
-        assert!(cache.get(&FileId::new("file2")).is_none());
-    }
-
-    #[test]
-    fn test_get_nonexistent_file() {
-        let cache = MetadataCache::new();
-        assert!(cache.get(&FileId::new("does-not-exist")).is_none());
-    }
-
-    #[test]
-    fn test_get_children_of_empty_directory() {
-        let cache = MetadataCache::new();
-        let children = cache.get_children(&FileId::new("empty-dir"));
         assert!(children.is_empty());
     }
 
     #[test]
-    fn test_remove_nonexistent_file_is_noop() {
-        let cache = MetadataCache::new();
-        cache.remove(&FileId::new("does-not-exist"));
-        // Should not panic
-    }
+    fn test_state_mapping_synced() {
+        let (db, account_id) = setup_test_db();
 
-    #[test]
-    fn test_remove_child_updates_parent_children() {
-        let cache = MetadataCache::new();
-
-        let parent = create_test_file("parent", "folder", None);
-        let child1 = create_test_file("child1", "file1.txt", Some("parent"));
-        let child2 = create_test_file("child2", "file2.txt", Some("parent"));
-
-        cache.insert(parent);
-        cache.insert(child1);
-        cache.insert(child2);
-
-        assert_eq!(cache.get_children(&FileId::new("parent")).len(), 2);
-
-        cache.remove(&FileId::new("child1"));
-
-        let remaining = cache.get_children(&FileId::new("parent"));
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].name, "file2.txt");
-    }
-
-    #[test]
-    fn test_insert_overwrites_existing_file() {
-        let cache = MetadataCache::new();
-
-        let file = CachedFile {
-            file_id: FileId::new("file1"),
-            name: "original.txt".to_string(),
-            parent_id: None,
-            size: 100,
-            mime_type: "text/plain".to_string(),
-            modified_time: Utc::now(),
-            is_directory: false,
-            state: CacheState::CloudOnly,
-        };
-        cache.insert(file);
-
-        let updated = CachedFile {
-            file_id: FileId::new("file1"),
-            name: "renamed.txt".to_string(),
-            parent_id: None,
-            size: 200,
-            mime_type: "text/plain".to_string(),
-            modified_time: Utc::now(),
-            is_directory: false,
-            state: CacheState::Cached,
-        };
-        cache.insert(updated);
-
-        let retrieved = cache.get(&FileId::new("file1")).unwrap();
-        assert_eq!(retrieved.name, "renamed.txt");
-        assert_eq!(retrieved.size, 200);
-        assert_eq!(retrieved.state, CacheState::Cached);
-    }
-
-    #[test]
-    fn test_update_state_nonexistent_file_is_noop() {
-        let cache = MetadataCache::new();
-        cache.update_state(&FileId::new("ghost"), CacheState::Cached);
-        // Should not panic, and file should still not exist
-        assert!(cache.get(&FileId::new("ghost")).is_none());
-    }
-
-    #[test]
-    fn test_populate_from_items() {
-        use cloudsync_core::{CloudItem, CloudPath};
-
-        let cache = MetadataCache::new();
-        let root_id = FileId::new("root");
-
-        let items = vec![
-            CloudItem::file(
-                FileId::new("f1"),
-                "document.pdf".to_string(),
-                CloudPath::new("/document.pdf"),
-                4096,
+        db.with_conn(|conn| {
+            let mut file = cloudsync_db::File::new(
+                account_id.clone(),
+                FileId::new("synced_file"),
+                CloudPath::new("/synced.txt"),
+                "synced.txt".to_string(),
+                Some(100),
+                None,
+                false,
                 Utc::now(),
-            ),
-            CloudItem::folder(
-                FileId::new("d1"),
-                "photos".to_string(),
-                CloudPath::new("/photos"),
+            );
+            file.state = FileState::Synced;
+            create_file(conn, &file)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let cache = MetadataCache::new(db, account_id);
+        let file = cache.get(&FileId::new("synced_file")).unwrap().unwrap();
+        assert_eq!(file.state, CacheState::Cached);
+    }
+
+    #[test]
+    fn test_state_mapping_syncing() {
+        let (db, account_id) = setup_test_db();
+
+        db.with_conn(|conn| {
+            let mut file = cloudsync_db::File::new(
+                account_id.clone(),
+                FileId::new("syncing_file"),
+                CloudPath::new("/syncing.txt"),
+                "syncing.txt".to_string(),
+                Some(100),
+                None,
+                false,
                 Utc::now(),
-            ),
-        ];
+            );
+            file.state = FileState::Syncing;
+            create_file(conn, &file)?;
+            Ok(())
+        })
+        .unwrap();
 
-        cache.populate_from_items(items, &root_id);
+        let cache = MetadataCache::new(db, account_id);
+        let file = cache.get(&FileId::new("syncing_file")).unwrap().unwrap();
+        assert_eq!(file.state, CacheState::Downloading);
+    }
 
-        let file = cache.get(&FileId::new("f1")).unwrap();
-        assert_eq!(file.name, "document.pdf");
-        assert_eq!(file.size, 4096);
-        assert!(!file.is_directory);
+    #[test]
+    fn test_state_mapping_cloud_only() {
+        let (db, account_id) = setup_test_db();
+
+        db.with_conn(|conn| {
+            let mut file = cloudsync_db::File::new(
+                account_id.clone(),
+                FileId::new("cloud_file"),
+                CloudPath::new("/cloud.txt"),
+                "cloud.txt".to_string(),
+                Some(100),
+                None,
+                false,
+                Utc::now(),
+            );
+            file.state = FileState::CloudOnly;
+            create_file(conn, &file)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let cache = MetadataCache::new(db, account_id);
+        let file = cache.get(&FileId::new("cloud_file")).unwrap().unwrap();
         assert_eq!(file.state, CacheState::CloudOnly);
-
-        let folder = cache.get(&FileId::new("d1")).unwrap();
-        assert_eq!(folder.name, "photos");
-        assert!(folder.is_directory);
-        assert_eq!(folder.size, 0); // folders have no size
-
-        // Both should be children of root
-        let children = cache.get_children(&root_id);
-        assert_eq!(children.len(), 2);
-    }
-
-    #[test]
-    fn test_nested_directory_hierarchy() {
-        let cache = MetadataCache::new();
-
-        let mut root = create_test_file("root", "root", None);
-        root.is_directory = true;
-        cache.insert(root);
-
-        let mut subdir = create_test_file("subdir", "docs", Some("root"));
-        subdir.is_directory = true;
-        cache.insert(subdir);
-
-        let nested_file = create_test_file("nested", "readme.md", Some("subdir"));
-        cache.insert(nested_file);
-
-        let root_children = cache.get_children(&FileId::new("root"));
-        assert_eq!(root_children.len(), 1);
-        assert_eq!(root_children[0].name, "docs");
-
-        let subdir_children = cache.get_children(&FileId::new("subdir"));
-        assert_eq!(subdir_children.len(), 1);
-        assert_eq!(subdir_children[0].name, "readme.md");
-    }
-
-    #[test]
-    fn test_state_transitions() {
-        let cache = MetadataCache::new();
-        let file = create_test_file("file1", "test.txt", None);
-        cache.insert(file);
-
-        // CloudOnly -> Downloading -> Cached -> Modified
-        let transitions = [
-            CacheState::Downloading,
-            CacheState::Cached,
-            CacheState::Modified,
-        ];
-
-        for expected_state in transitions {
-            cache.update_state(&FileId::new("file1"), expected_state);
-            let file = cache.get(&FileId::new("file1")).unwrap();
-            assert_eq!(file.state, expected_state);
-        }
-    }
-
-    #[test]
-    fn test_default_creates_empty_cache() {
-        let cache = MetadataCache::default();
-        assert!(cache.get(&FileId::new("anything")).is_none());
-        assert!(cache.get_children(&FileId::new("anything")).is_empty());
     }
 }

@@ -250,4 +250,179 @@ mod tests {
         assert!(cache.get(&FileId::new("file1")).is_none());
         assert!(cache.get(&FileId::new("file2")).is_none());
     }
+
+    #[test]
+    fn test_get_nonexistent_file() {
+        let cache = MetadataCache::new();
+        assert!(cache.get(&FileId::new("does-not-exist")).is_none());
+    }
+
+    #[test]
+    fn test_get_children_of_empty_directory() {
+        let cache = MetadataCache::new();
+        let children = cache.get_children(&FileId::new("empty-dir"));
+        assert!(children.is_empty());
+    }
+
+    #[test]
+    fn test_remove_nonexistent_file_is_noop() {
+        let cache = MetadataCache::new();
+        cache.remove(&FileId::new("does-not-exist"));
+        // Should not panic
+    }
+
+    #[test]
+    fn test_remove_child_updates_parent_children() {
+        let cache = MetadataCache::new();
+
+        let parent = create_test_file("parent", "folder", None);
+        let child1 = create_test_file("child1", "file1.txt", Some("parent"));
+        let child2 = create_test_file("child2", "file2.txt", Some("parent"));
+
+        cache.insert(parent);
+        cache.insert(child1);
+        cache.insert(child2);
+
+        assert_eq!(cache.get_children(&FileId::new("parent")).len(), 2);
+
+        cache.remove(&FileId::new("child1"));
+
+        let remaining = cache.get_children(&FileId::new("parent"));
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "file2.txt");
+    }
+
+    #[test]
+    fn test_insert_overwrites_existing_file() {
+        let cache = MetadataCache::new();
+
+        let file = CachedFile {
+            file_id: FileId::new("file1"),
+            name: "original.txt".to_string(),
+            parent_id: None,
+            size: 100,
+            mime_type: "text/plain".to_string(),
+            modified_time: Utc::now(),
+            is_directory: false,
+            state: CacheState::CloudOnly,
+        };
+        cache.insert(file);
+
+        let updated = CachedFile {
+            file_id: FileId::new("file1"),
+            name: "renamed.txt".to_string(),
+            parent_id: None,
+            size: 200,
+            mime_type: "text/plain".to_string(),
+            modified_time: Utc::now(),
+            is_directory: false,
+            state: CacheState::Cached,
+        };
+        cache.insert(updated);
+
+        let retrieved = cache.get(&FileId::new("file1")).unwrap();
+        assert_eq!(retrieved.name, "renamed.txt");
+        assert_eq!(retrieved.size, 200);
+        assert_eq!(retrieved.state, CacheState::Cached);
+    }
+
+    #[test]
+    fn test_update_state_nonexistent_file_is_noop() {
+        let cache = MetadataCache::new();
+        cache.update_state(&FileId::new("ghost"), CacheState::Cached);
+        // Should not panic, and file should still not exist
+        assert!(cache.get(&FileId::new("ghost")).is_none());
+    }
+
+    #[test]
+    fn test_populate_from_items() {
+        use cloudsync_core::{CloudItem, CloudPath};
+
+        let cache = MetadataCache::new();
+        let root_id = FileId::new("root");
+
+        let items = vec![
+            CloudItem::file(
+                FileId::new("f1"),
+                "document.pdf".to_string(),
+                CloudPath::new("/document.pdf"),
+                4096,
+                Utc::now(),
+            ),
+            CloudItem::folder(
+                FileId::new("d1"),
+                "photos".to_string(),
+                CloudPath::new("/photos"),
+                Utc::now(),
+            ),
+        ];
+
+        cache.populate_from_items(items, &root_id);
+
+        let file = cache.get(&FileId::new("f1")).unwrap();
+        assert_eq!(file.name, "document.pdf");
+        assert_eq!(file.size, 4096);
+        assert!(!file.is_directory);
+        assert_eq!(file.state, CacheState::CloudOnly);
+
+        let folder = cache.get(&FileId::new("d1")).unwrap();
+        assert_eq!(folder.name, "photos");
+        assert!(folder.is_directory);
+        assert_eq!(folder.size, 0); // folders have no size
+
+        // Both should be children of root
+        let children = cache.get_children(&root_id);
+        assert_eq!(children.len(), 2);
+    }
+
+    #[test]
+    fn test_nested_directory_hierarchy() {
+        let cache = MetadataCache::new();
+
+        let mut root = create_test_file("root", "root", None);
+        root.is_directory = true;
+        cache.insert(root);
+
+        let mut subdir = create_test_file("subdir", "docs", Some("root"));
+        subdir.is_directory = true;
+        cache.insert(subdir);
+
+        let nested_file = create_test_file("nested", "readme.md", Some("subdir"));
+        cache.insert(nested_file);
+
+        let root_children = cache.get_children(&FileId::new("root"));
+        assert_eq!(root_children.len(), 1);
+        assert_eq!(root_children[0].name, "docs");
+
+        let subdir_children = cache.get_children(&FileId::new("subdir"));
+        assert_eq!(subdir_children.len(), 1);
+        assert_eq!(subdir_children[0].name, "readme.md");
+    }
+
+    #[test]
+    fn test_state_transitions() {
+        let cache = MetadataCache::new();
+        let file = create_test_file("file1", "test.txt", None);
+        cache.insert(file);
+
+        // CloudOnly -> Downloading -> Cached -> Modified
+        let transitions = [
+            CacheState::Downloading,
+            CacheState::Cached,
+            CacheState::Modified,
+        ];
+
+        for expected_state in transitions {
+            cache.update_state(&FileId::new("file1"), expected_state);
+            let file = cache.get(&FileId::new("file1")).unwrap();
+            assert_eq!(file.state, expected_state);
+        }
+    }
+
+    #[test]
+    fn test_default_creates_empty_cache() {
+        let cache = MetadataCache::default();
+        assert!(cache.get(&FileId::new("anything")).is_none());
+        assert!(cache.get_children(&FileId::new("anything")).is_empty());
+    }
 }

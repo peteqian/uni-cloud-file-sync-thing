@@ -46,10 +46,17 @@ Avoid over-abstraction that makes code harder to follow, but also don't create m
 
 ### Project Workflow
 
-- You must always pull the issue from GitHub, read it, set the issue to "In Progress" once you're ready to begin work
 - Do NOT include project progress or session summaries in this CLAUDE.md file.
 
-Once you are done with implementation, commit the code, attach detailed progress reports as comments to the relevant GitHub issues. Each issue comment should include:
+- You should move the issue to "In Progress" -> "In Review" -> "Done"
+
+Once you are done with implementation, commit the code, attach detailed progress reports as comments to the relevant GitHub issues.
+
+Move the issue to "In Review" and proceed with testing.
+
+Once all tests have passed, move the issue to "Done".
+
+Each issue comment should include:
 
 - Deliverables and implementation details
 - Test coverage and quality metrics
@@ -57,8 +64,6 @@ Once you are done with implementation, commit the code, attach detailed progress
 - Key implementation insights
 - Code quality results (tests passing, clippy, rustfmt)
 - Commit Hash
-
-When this is done, push the code and move issue to "Done".
 
 ### Learning Insights While Coding
 

@@ -295,4 +295,199 @@ mod tests {
         assert_eq!(attr.kind, FileType::RegularFile);
         assert_eq!(attr.perm, 0o644);
     }
+
+    #[test]
+    fn test_directory_to_attr() {
+        let fs = CloudSyncFS::new("test-provider").unwrap();
+
+        let dir = CachedFile {
+            file_id: FileId::new("dir1"),
+            name: "documents".to_string(),
+            parent_id: None,
+            size: 0,
+            mime_type: "".to_string(),
+            modified_time: chrono::Utc::now(),
+            is_directory: true,
+            state: CacheState::CloudOnly,
+        };
+
+        let attr = fs.cached_file_to_attr(&dir, 10);
+
+        assert_eq!(attr.ino, 10);
+        assert_eq!(attr.kind, FileType::Directory);
+        assert_eq!(attr.perm, 0o755);
+        assert_eq!(attr.size, 0);
+    }
+
+    #[test]
+    fn test_blocks_calculation() {
+        let fs = CloudSyncFS::new("test-provider").unwrap();
+
+        let file = CachedFile {
+            file_id: FileId::new("f1"),
+            name: "data.bin".to_string(),
+            parent_id: None,
+            size: 1025, // Just over 2 blocks
+            mime_type: "application/octet-stream".to_string(),
+            modified_time: chrono::Utc::now(),
+            is_directory: false,
+            state: CacheState::CloudOnly,
+        };
+
+        let attr = fs.cached_file_to_attr(&file, 5);
+        // 1025 bytes / 512 = 2.002 -> ceil -> 3 blocks
+        assert_eq!(attr.blocks, 3);
+    }
+
+    #[test]
+    fn test_zero_size_file_blocks() {
+        let fs = CloudSyncFS::new("test-provider").unwrap();
+
+        let file = CachedFile {
+            file_id: FileId::new("empty"),
+            name: "empty.txt".to_string(),
+            parent_id: None,
+            size: 0,
+            mime_type: "text/plain".to_string(),
+            modified_time: chrono::Utc::now(),
+            is_directory: false,
+            state: CacheState::CloudOnly,
+        };
+
+        let attr = fs.cached_file_to_attr(&file, 6);
+        assert_eq!(attr.blocks, 0);
+        assert_eq!(attr.size, 0);
+    }
+
+    /// Helper to create a CloudSyncFS with populated cache and inodes
+    fn create_populated_fs() -> CloudSyncFS {
+        let fs = CloudSyncFS::new("test-provider").unwrap();
+
+        // Insert files under root (root has FileId "root")
+        let file1 = CachedFile {
+            file_id: FileId::new("file1"),
+            name: "hello.txt".to_string(),
+            parent_id: Some(FileId::new("root")),
+            size: 512,
+            mime_type: "text/plain".to_string(),
+            modified_time: chrono::Utc::now(),
+            is_directory: false,
+            state: CacheState::CloudOnly,
+        };
+
+        let dir1 = CachedFile {
+            file_id: FileId::new("dir1"),
+            name: "photos".to_string(),
+            parent_id: Some(FileId::new("root")),
+            size: 0,
+            mime_type: "".to_string(),
+            modified_time: chrono::Utc::now(),
+            is_directory: true,
+            state: CacheState::CloudOnly,
+        };
+
+        let nested = CachedFile {
+            file_id: FileId::new("nested1"),
+            name: "pic.jpg".to_string(),
+            parent_id: Some(FileId::new("dir1")),
+            size: 2048,
+            mime_type: "image/jpeg".to_string(),
+            modified_time: chrono::Utc::now(),
+            is_directory: false,
+            state: CacheState::CloudOnly,
+        };
+
+        fs.metadata_cache.insert(file1);
+        fs.metadata_cache.insert(dir1);
+        fs.metadata_cache.insert(nested);
+
+        // Pre-allocate inodes for directories so readdir works
+        fs.inode_manager.get_or_allocate(&FileId::new("dir1"));
+
+        fs
+    }
+
+    #[test]
+    fn test_getattr_root_returns_directory() {
+        let fs = CloudSyncFS::new("test-provider").unwrap();
+        let attr = fs.get_root_attr();
+
+        assert_eq!(attr.ino, FUSE_ROOT_INODE);
+        assert_eq!(attr.kind, FileType::Directory);
+        assert_eq!(attr.perm, 0o755);
+        assert_eq!(attr.nlink, 2);
+    }
+
+    #[test]
+    fn test_populated_fs_inode_cache_consistency() {
+        let fs = create_populated_fs();
+
+        // Root should be in inode manager
+        let root_file_id = fs.inode_manager.get_file_id(FUSE_ROOT_INODE);
+        assert_eq!(root_file_id, Some(FileId::new("root")));
+
+        // Root children should be in cache
+        let children = fs.metadata_cache.get_children(&FileId::new("root"));
+        assert_eq!(children.len(), 2);
+
+        let names: Vec<&str> = children.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"hello.txt"));
+        assert!(names.contains(&"photos"));
+    }
+
+    #[test]
+    fn test_nested_children_accessible() {
+        let fs = create_populated_fs();
+
+        let dir_children = fs.metadata_cache.get_children(&FileId::new("dir1"));
+        assert_eq!(dir_children.len(), 1);
+        assert_eq!(dir_children[0].name, "pic.jpg");
+        assert_eq!(dir_children[0].size, 2048);
+    }
+
+    #[test]
+    fn test_inode_manager_and_cache_agree() {
+        let fs = create_populated_fs();
+
+        // Allocate an inode for file1 through the manager
+        let inode = fs.inode_manager.get_or_allocate(&FileId::new("file1"));
+
+        // Look up the file_id from that inode
+        let file_id = fs.inode_manager.get_file_id(inode).unwrap();
+
+        // That file_id should exist in cache
+        let cached = fs.metadata_cache.get(&file_id).unwrap();
+        assert_eq!(cached.name, "hello.txt");
+        assert_eq!(cached.size, 512);
+    }
+
+    #[test]
+    fn test_attr_timestamps_from_modified_time() {
+        let fs = CloudSyncFS::new("test-provider").unwrap();
+
+        let fixed_time = chrono::DateTime::parse_from_rfc3339("2025-06-15T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let file = CachedFile {
+            file_id: FileId::new("f1"),
+            name: "test.txt".to_string(),
+            parent_id: None,
+            size: 100,
+            mime_type: "text/plain".to_string(),
+            modified_time: fixed_time,
+            is_directory: false,
+            state: CacheState::CloudOnly,
+        };
+
+        let attr = fs.cached_file_to_attr(&file, 7);
+
+        let expected_system_time = UNIX_EPOCH + Duration::from_secs(fixed_time.timestamp() as u64);
+
+        // atime, mtime, ctime, crtime should all equal modified_time
+        assert_eq!(attr.mtime, expected_system_time);
+        assert_eq!(attr.atime, expected_system_time);
+        assert_eq!(attr.ctime, expected_system_time);
+        assert_eq!(attr.crtime, expected_system_time);
+    }
 }

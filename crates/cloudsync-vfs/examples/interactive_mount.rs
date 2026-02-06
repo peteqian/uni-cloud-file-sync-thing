@@ -14,9 +14,7 @@ use tracing_subscriber;
 
 fn main() -> Result<()> {
     // Initialize logging
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     println!("\n╔════════════════════════════════════════╗");
     println!("║  CloudSync VFS Interactive Mount Test  ║");

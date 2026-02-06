@@ -161,4 +161,73 @@ mod tests {
         assert_eq!(manager.get_inode(&file), None);
         assert_eq!(manager.get_file_id(inode), None);
     }
+
+    #[test]
+    fn test_remove_nonexistent_is_noop() {
+        let manager = InodeManager::new();
+        manager.remove(&FileId::new("ghost"));
+        // Should not panic, root should still be intact
+        assert_eq!(
+            manager.get_file_id(FUSE_ROOT_INODE),
+            Some(FileId::new("root"))
+        );
+    }
+
+    #[test]
+    fn test_get_file_id_nonexistent_inode() {
+        let manager = InodeManager::new();
+        assert!(manager.get_file_id(9999).is_none());
+    }
+
+    #[test]
+    fn test_inodes_are_sequential() {
+        let manager = InodeManager::new();
+
+        let inode_a = manager.get_or_allocate(&FileId::new("a"));
+        let inode_b = manager.get_or_allocate(&FileId::new("b"));
+        let inode_c = manager.get_or_allocate(&FileId::new("c"));
+
+        assert_eq!(inode_b, inode_a + 1);
+        assert_eq!(inode_c, inode_b + 1);
+    }
+
+    #[test]
+    fn test_removed_inode_not_reused() {
+        let manager = InodeManager::new();
+
+        let inode_a = manager.get_or_allocate(&FileId::new("a"));
+        manager.remove(&FileId::new("a"));
+
+        // New allocation should get a new inode, not reuse the old one
+        let inode_b = manager.get_or_allocate(&FileId::new("b"));
+        assert_ne!(inode_a, inode_b);
+        assert!(inode_b > inode_a);
+    }
+
+    #[test]
+    fn test_re_allocate_after_remove() {
+        let manager = InodeManager::new();
+
+        let original_inode = manager.get_or_allocate(&FileId::new("file"));
+        manager.remove(&FileId::new("file"));
+
+        // Re-allocating the same file_id should get a different inode
+        let new_inode = manager.get_or_allocate(&FileId::new("file"));
+        assert_ne!(original_inode, new_inode);
+    }
+
+    #[test]
+    fn test_root_inode_constant() {
+        assert_eq!(InodeManager::root_inode(), 1);
+        assert_eq!(FUSE_ROOT_INODE, 1);
+    }
+
+    #[test]
+    fn test_default_creates_valid_manager() {
+        let manager = InodeManager::default();
+        assert_eq!(
+            manager.get_file_id(FUSE_ROOT_INODE),
+            Some(FileId::new("root"))
+        );
+    }
 }

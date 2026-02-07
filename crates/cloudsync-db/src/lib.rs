@@ -26,6 +26,7 @@ pub mod connection;
 pub mod error;
 pub mod files;
 pub mod migrations;
+pub mod sync_cursors;
 pub mod vfs_inodes;
 
 use rusqlite::Connection;
@@ -43,6 +44,7 @@ pub use files::{
     list_files, update_file, File, FILES_MIGRATION,
 };
 pub use migrations::{Migration, Migrator};
+pub use sync_cursors::SYNC_CURSORS_MIGRATION;
 pub use vfs_inodes::VFS_INODES_MIGRATION;
 
 /// High-level database interface with connection management and migrations.

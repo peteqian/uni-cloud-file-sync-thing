@@ -5,6 +5,7 @@
 
 use crate::cache::{CachedFile, MetadataCache};
 use crate::inode::{InodeManager, FUSE_ROOT_INODE};
+use crate::metadata_sync::SyncHandle;
 use anyhow::Result;
 use cloudsync_core::types::AccountId;
 use cloudsync_db::Database;
@@ -18,15 +19,16 @@ use tracing::{debug, info, warn};
 const TTL: Duration = Duration::from_secs(1);
 
 /// CloudSync FUSE filesystem
-#[allow(dead_code)] // provider_id will be used in future issues
+#[allow(dead_code)] // provider_id and _sync_handle will be used in future issues
 pub struct CloudSyncFS {
     provider_id: String,
     inode_manager: InodeManager,
     metadata_cache: MetadataCache,
+    _sync_handle: Option<SyncHandle>,
 }
 
 impl CloudSyncFS {
-    /// Create a new CloudSync filesystem backed by SQLite
+    /// Create a new CloudSync filesystem backed by SQLite (no provider sync)
     pub fn new(provider_id: &str, db: Database, account_id: AccountId) -> Result<Self> {
         info!("Initializing CloudSyncFS for provider: {}", provider_id);
 
@@ -37,6 +39,33 @@ impl CloudSyncFS {
             provider_id: provider_id.to_string(),
             inode_manager,
             metadata_cache,
+            _sync_handle: None,
+        })
+    }
+
+    /// Create a CloudSync filesystem with a background sync handle.
+    ///
+    /// The sync handle keeps the background metadata sync thread alive
+    /// for as long as the filesystem exists.
+    pub fn with_sync_handle(
+        provider_id: &str,
+        db: Database,
+        account_id: AccountId,
+        sync_handle: SyncHandle,
+    ) -> Result<Self> {
+        info!(
+            "Initializing CloudSyncFS for provider: {} (with sync)",
+            provider_id
+        );
+
+        let inode_manager = InodeManager::new(db.clone())?;
+        let metadata_cache = MetadataCache::new(db, account_id);
+
+        Ok(Self {
+            provider_id: provider_id.to_string(),
+            inode_manager,
+            metadata_cache,
+            _sync_handle: Some(sync_handle),
         })
     }
 

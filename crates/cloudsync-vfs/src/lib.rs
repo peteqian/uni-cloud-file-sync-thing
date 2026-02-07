@@ -7,15 +7,20 @@
 mod cache;
 mod filesystem;
 mod inode;
+mod metadata_sync;
 
 pub use cache::{CacheState, CachedFile, MetadataCache};
 pub use filesystem::CloudSyncFS;
 pub use inode::{InodeManager, FUSE_ROOT_INODE};
+pub use metadata_sync::{cloud_item_to_db_file, start_background_sync, MetadataSyncer, SyncHandle};
 
 use anyhow::Result;
+use cloudsync_core::provider::CloudProvider;
 use cloudsync_core::types::AccountId;
 use cloudsync_db::Database;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 use tracing::{error, info};
 
 /// Mount a cloud provider's filesystem at the specified path.
@@ -64,6 +69,65 @@ pub fn mount(
     });
 
     info!("Filesystem mounted successfully");
+
+    Ok(MountHandle {
+        mount_point: mount_point_buf,
+        _session: session,
+    })
+}
+
+/// Mount a cloud provider's filesystem with live metadata sync.
+///
+/// Like `mount()`, but also starts a background sync thread that
+/// fetches metadata from the provider and populates the `files` table.
+///
+/// # Arguments
+/// * `mount_point` - Directory where the filesystem will be mounted
+/// * `provider` - Cloud provider to sync metadata from
+/// * `db` - Database for persistent inode and metadata storage
+/// * `account_id` - Account to display files for
+/// * `sync_interval` - How often to run incremental sync
+///
+/// # Returns
+/// A handle that stops sync and unmounts the filesystem when dropped
+pub fn mount_with_provider(
+    mount_point: &Path,
+    provider: Arc<dyn CloudProvider>,
+    db: Database,
+    account_id: AccountId,
+    sync_interval: Duration,
+) -> Result<MountHandle> {
+    let provider_id = provider.id();
+    info!(
+        "Mounting {} with live sync at {:?}",
+        provider_id, mount_point
+    );
+
+    if !mount_point.exists() {
+        std::fs::create_dir_all(mount_point)?;
+    }
+
+    // Start background metadata sync
+    let sync_handle =
+        start_background_sync(provider, db.clone(), account_id.clone(), sync_interval);
+
+    let fs = CloudSyncFS::with_sync_handle(provider_id, db, account_id, sync_handle)?;
+
+    let options = vec![
+        fuser::MountOption::FSName(format!("cloudsync-{}", provider_id)),
+        fuser::MountOption::AutoUnmount,
+    ];
+
+    let mount_point_buf = mount_point.to_path_buf();
+    let mount_point_for_thread = mount_point_buf.clone();
+
+    let session = std::thread::spawn(move || {
+        if let Err(e) = fuser::mount2(fs, &mount_point_for_thread, &options) {
+            error!("FUSE mount failed: {}", e);
+        }
+    });
+
+    info!("Filesystem mounted with provider sync");
 
     Ok(MountHandle {
         mount_point: mount_point_buf,

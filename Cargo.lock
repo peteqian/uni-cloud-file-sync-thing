@@ -576,6 +576,7 @@ name = "cloudsync-vfs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "cloudsync-core",
  "cloudsync-db",
@@ -588,6 +589,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

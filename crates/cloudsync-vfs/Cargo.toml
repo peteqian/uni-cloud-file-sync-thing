@@ -13,6 +13,7 @@ fuser = "0.16"
 libc = "0.2"
 
 # Internal crates
+cloudsync-config.workspace = true
 cloudsync-core.workspace = true
 cloudsync-db.workspace = true
 cloudsync-providers.workspace = true

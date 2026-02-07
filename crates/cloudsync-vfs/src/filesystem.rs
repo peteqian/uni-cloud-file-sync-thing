@@ -4,27 +4,42 @@
 //! that exposes cloud files without downloading content until accessed.
 
 use crate::cache::{CachedFile, MetadataCache};
+use crate::content_cache::ContentCache;
 use crate::inode::{InodeManager, FUSE_ROOT_INODE};
 use crate::metadata_sync::SyncHandle;
 use anyhow::Result;
+use cloudsync_core::provider::CloudProvider;
 use cloudsync_core::types::AccountId;
 use cloudsync_db::Database;
 use fuser::{
-    FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request,
+    FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyOpen,
+    Request,
 };
+use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info};
 
 const TTL: Duration = Duration::from_secs(1);
 
 /// CloudSync FUSE filesystem
-#[allow(dead_code)] // provider_id and _sync_handle will be used in future issues
+#[allow(dead_code)] // provider_id used for logging/identification
 pub struct CloudSyncFS {
     provider_id: String,
     inode_manager: InodeManager,
     metadata_cache: MetadataCache,
     _sync_handle: Option<SyncHandle>,
+    content_cache: Option<ContentCache>,
+    open_files: Mutex<HashMap<u64, OpenFile>>,
+    next_fh: AtomicU64,
+}
+
+/// An open file handle backed by a cached local file.
+struct OpenFile {
+    path: PathBuf,
 }
 
 impl CloudSyncFS {
@@ -40,32 +55,46 @@ impl CloudSyncFS {
             inode_manager,
             metadata_cache,
             _sync_handle: None,
+            content_cache: None,
+            open_files: Mutex::new(HashMap::new()),
+            next_fh: AtomicU64::new(1),
         })
     }
 
-    /// Create a CloudSync filesystem with a background sync handle.
+    /// Create a CloudSync filesystem with a background sync handle and content downloading.
     ///
     /// The sync handle keeps the background metadata sync thread alive
-    /// for as long as the filesystem exists.
+    /// for as long as the filesystem exists. The provider is used for
+    /// on-demand file downloads when files are opened.
     pub fn with_sync_handle(
         provider_id: &str,
         db: Database,
         account_id: AccountId,
         sync_handle: SyncHandle,
+        provider: Arc<dyn CloudProvider>,
     ) -> Result<Self> {
         info!(
-            "Initializing CloudSyncFS for provider: {} (with sync)",
+            "Initializing CloudSyncFS for provider: {} (with sync + download)",
             provider_id
         );
 
         let inode_manager = InodeManager::new(db.clone())?;
-        let metadata_cache = MetadataCache::new(db, account_id);
+        let metadata_cache = MetadataCache::new(db.clone(), account_id.clone());
+
+        let cache_root = cloudsync_config::CloudSyncPaths::default()
+            .file_cache_dir()
+            .join(provider_id);
+
+        let content_cache = ContentCache::new(cache_root, provider, db, account_id)?;
 
         Ok(Self {
             provider_id: provider_id.to_string(),
             inode_manager,
             metadata_cache,
             _sync_handle: Some(sync_handle),
+            content_cache: Some(content_cache),
+            open_files: Mutex::new(HashMap::new()),
+            next_fh: AtomicU64::new(1),
         })
     }
 
@@ -285,21 +314,10 @@ impl Filesystem for CloudSyncFS {
         reply.ok();
     }
 
-    /// Read file data
-    fn read(
-        &mut self,
-        _req: &Request,
-        ino: u64,
-        _fh: u64,
-        offset: i64,
-        size: u32,
-        _flags: i32,
-        _lock: Option<u64>,
-        reply: ReplyData,
-    ) {
-        debug!("read(ino={}, offset={}, size={})", ino, offset, size);
+    /// Open a file — triggers on-demand download from the cloud provider.
+    fn open(&mut self, _req: &Request, ino: u64, _flags: i32, reply: ReplyOpen) {
+        debug!("open(ino={})", ino);
 
-        // Get file from cache
         let file_id = match self.inode_manager.get_file_id(ino) {
             Ok(Some(id)) => id,
             Ok(None) | Err(_) => {
@@ -316,19 +334,107 @@ impl Filesystem for CloudSyncFS {
             }
         };
 
-        // Check if file is a directory
         if file.is_directory {
             reply.error(libc::EISDIR);
             return;
         }
 
-        // TODO: Implement actual file download and caching
-        warn!(
-            "read() called but download not implemented yet for file: {}",
-            file.name
-        );
+        let content_cache = match &self.content_cache {
+            Some(cc) => cc,
+            None => {
+                reply.error(libc::ENOSYS);
+                return;
+            }
+        };
 
-        reply.error(libc::ENOSYS); // Function not implemented
+        let cached_path = match content_cache.ensure_downloaded(&file_id) {
+            Ok(p) => p,
+            Err(errno) => {
+                reply.error(errno);
+                return;
+            }
+        };
+
+        let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
+
+        {
+            let mut files = match self.open_files.lock() {
+                Ok(f) => f,
+                Err(_) => {
+                    error!("Failed to lock open_files");
+                    reply.error(libc::EIO);
+                    return;
+                }
+            };
+            files.insert(fh, OpenFile { path: cached_path });
+        }
+
+        reply.opened(fh, 0);
+    }
+
+    /// Read file data from the locally cached copy.
+    fn read(
+        &mut self,
+        _req: &Request,
+        _ino: u64,
+        fh: u64,
+        offset: i64,
+        size: u32,
+        _flags: i32,
+        _lock: Option<u64>,
+        reply: ReplyData,
+    ) {
+        debug!("read(fh={}, offset={}, size={})", fh, offset, size);
+
+        let cached_path = {
+            let files = match self.open_files.lock() {
+                Ok(f) => f,
+                Err(_) => {
+                    reply.error(libc::EIO);
+                    return;
+                }
+            };
+            match files.get(&fh) {
+                Some(open_file) => open_file.path.clone(),
+                None => {
+                    reply.error(libc::EBADF);
+                    return;
+                }
+            }
+        };
+
+        let content_cache = match &self.content_cache {
+            Some(cc) => cc,
+            None => {
+                reply.error(libc::ENOSYS);
+                return;
+            }
+        };
+
+        match content_cache.read_file_at(&cached_path, offset, size) {
+            Ok(data) => reply.data(&data),
+            Err(errno) => reply.error(errno),
+        }
+    }
+
+    /// Release (close) a file handle.
+    fn release(
+        &mut self,
+        _req: &Request,
+        _ino: u64,
+        fh: u64,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        _flush: bool,
+        reply: fuser::ReplyEmpty,
+    ) {
+        debug!("release(fh={})", fh);
+
+        if let Ok(mut files) = self.open_files.lock() {
+            files.remove(&fh);
+        }
+
+        reply.ok();
     }
 }
 

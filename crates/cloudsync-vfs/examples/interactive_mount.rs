@@ -10,7 +10,7 @@ use cloudsync_core::types::{AccountId, ProviderId};
 use cloudsync_db::{
     accounts, Database, Migration, ACCOUNTS_MIGRATION, FILES_MIGRATION, VFS_INODES_MIGRATION,
 };
-use cloudsync_vfs;
+
 use std::io;
 use tempfile::TempDir;
 use tracing::Level;

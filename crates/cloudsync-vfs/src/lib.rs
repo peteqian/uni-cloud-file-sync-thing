@@ -5,6 +5,7 @@
 //! is only downloaded when accessed.
 
 mod cache;
+mod content_cache;
 mod filesystem;
 mod inode;
 mod metadata_sync;
@@ -108,10 +109,14 @@ pub fn mount_with_provider(
     }
 
     // Start background metadata sync
-    let sync_handle =
-        start_background_sync(provider, db.clone(), account_id.clone(), sync_interval);
+    let sync_handle = start_background_sync(
+        provider.clone(),
+        db.clone(),
+        account_id.clone(),
+        sync_interval,
+    );
 
-    let fs = CloudSyncFS::with_sync_handle(provider_id, db, account_id, sync_handle)?;
+    let fs = CloudSyncFS::with_sync_handle(provider_id, db, account_id, sync_handle, provider)?;
 
     let options = vec![
         fuser::MountOption::FSName(format!("cloudsync-{}", provider_id)),

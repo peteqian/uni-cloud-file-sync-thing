@@ -578,6 +578,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "cloudsync-config",
  "cloudsync-core",
  "cloudsync-db",
  "cloudsync-providers",

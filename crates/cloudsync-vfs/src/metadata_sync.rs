@@ -282,6 +282,7 @@ mod tests {
         accounts, Migration, ACCOUNTS_MIGRATION, FILES_MIGRATION, SYNC_CURSORS_MIGRATION,
         VFS_INODES_MIGRATION,
     };
+    use std::collections::HashMap;
     use std::path::Path;
     use std::sync::Mutex;
     use url::Url;
@@ -290,6 +291,7 @@ mod tests {
     struct MockProvider {
         items: Mutex<Vec<CloudItem>>,
         changes: Mutex<Option<ChangeList>>,
+        download_content: Mutex<HashMap<String, Vec<u8>>>,
     }
 
     impl MockProvider {
@@ -297,6 +299,7 @@ mod tests {
             Self {
                 items: Mutex::new(items),
                 changes: Mutex::new(changes),
+                download_content: Mutex::new(HashMap::new()),
             }
         }
 
@@ -332,11 +335,19 @@ mod tests {
 
         async fn download(
             &self,
-            _id: &FileId,
-            _dest: &Path,
+            id: &FileId,
+            dest: &Path,
             _progress: Option<tokio::sync::mpsc::Sender<TransferProgress>>,
         ) -> cloudsync_core::error::Result<()> {
-            unimplemented!()
+            let content = self.download_content.lock().unwrap();
+            if let Some(data) = content.get(&id.to_string()) {
+                std::fs::write(dest, data)?;
+                Ok(())
+            } else {
+                Err(cloudsync_core::error::Error::FileNotFound {
+                    path: id.to_string(),
+                })
+            }
         }
 
         async fn upload(

@@ -1,8 +1,6 @@
 # UniCloudST (Unified Cloud Storage Sync Tool)
 
-A Rust-based desktop client for syncing files from cloud storage providers to your local filesystem.
-
-**Status**: Read-only MVP - syncs Google Drive to `~/UniCloudST/gdrive/`
+A fully vibe-coded desktop client for syncing files from cloud storage providers (Google Drive, OneDrive).
 
 ## Installation
 

@@ -4,11 +4,15 @@
 //! protocol for communication between the CloudSync daemon and shell
 //! extensions (Nautilus, Dolphin, Windows Explorer, Finder).
 //!
-//! Communication uses JSON over Unix sockets (Linux/macOS) or named
-//! pipes (Windows).
-//!
-//! Full implementation in Phase 3.1.
+//! Communication uses newline-delimited JSON over Unix sockets.
 
+pub mod error;
+pub mod handler;
 pub mod messages;
+pub mod server;
+pub mod transport;
 
+pub use error::{Error, Result};
+pub use handler::RequestHandler;
 pub use messages::{Request, Response};
+pub use server::{IpcServer, ShutdownHandle};

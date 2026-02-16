@@ -133,6 +133,17 @@ impl ProviderId {
         }
     }
 
+    /// Parses a provider slug string (e.g. "gdrive") into a ProviderId.
+    /// Returns None for unrecognized slugs.
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        match slug {
+            "gdrive" => Some(ProviderId::GoogleDrive),
+            "dropbox" => Some(ProviderId::Dropbox),
+            "onedrive" => Some(ProviderId::OneDrive),
+            _ => None,
+        }
+    }
+
     /// Returns the display name for the provider.
     pub fn display_name(&self) -> &'static str {
         match self {
@@ -406,6 +417,28 @@ mod tests {
         assert_eq!(ProviderId::GoogleDrive.as_str(), "gdrive");
         assert_eq!(ProviderId::Dropbox.as_str(), "dropbox");
         assert_eq!(ProviderId::OneDrive.as_str(), "onedrive");
+    }
+
+    #[test]
+    fn provider_id_from_slug_valid() {
+        assert_eq!(ProviderId::from_slug("gdrive"), Some(ProviderId::GoogleDrive));
+        assert_eq!(ProviderId::from_slug("dropbox"), Some(ProviderId::Dropbox));
+        assert_eq!(ProviderId::from_slug("onedrive"), Some(ProviderId::OneDrive));
+    }
+
+    #[test]
+    fn provider_id_from_slug_unknown() {
+        assert_eq!(ProviderId::from_slug("unknown"), None);
+        assert_eq!(ProviderId::from_slug(""), None);
+    }
+
+    #[test]
+    fn provider_id_slug_roundtrip() {
+        for provider in [ProviderId::GoogleDrive, ProviderId::Dropbox, ProviderId::OneDrive] {
+            let slug = provider.as_str();
+            let parsed = ProviderId::from_slug(slug).unwrap();
+            assert_eq!(parsed, provider);
+        }
     }
 
     #[test]

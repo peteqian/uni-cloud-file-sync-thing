@@ -4,12 +4,16 @@
 //! The daemon manages file synchronization with cloud providers and
 //! responds to IPC requests from shell extensions.
 
+mod handler;
+
 use clap::Parser;
 use cloudsync_config::{CloudSyncPaths, Config};
 use cloudsync_core::types::AccountId;
 use cloudsync_db::{Database, Migration};
+use cloudsync_ipc::{IpcServer, PathResolver};
 use cloudsync_providers::gdrive::{GoogleDriveClient, GoogleDriveProvider, OAuthConfig};
 use cloudsync_sync::{SyncEngine, SyncQueue};
+use handler::DaemonHandler;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
@@ -109,13 +113,51 @@ async fn main() -> anyhow::Result<()> {
     info!("Google Drive provider initialized");
 
     // Initialize sync engine
+    let db_arc = Arc::new(db);
     let queue = Arc::new(SyncQueue::new());
     let engine = Arc::new(SyncEngine::new(
         Arc::new(provider),
-        Arc::new(db),
+        db_arc.clone(),
         queue.clone(),
         AccountId::new(), // TODO: Load account ID from database
     ));
+
+    // Initialize IPC server
+    let path_resolver = PathResolver::new(&config.sync.root_folder);
+
+    // Load active accounts for path resolution
+    let provider_accounts: Vec<(String, AccountId)> = db_arc
+        .with_conn(|conn| {
+            let accounts = cloudsync_db::list_accounts(conn, true)?;
+            Ok(accounts
+                .into_iter()
+                .map(|a| (a.provider.as_str().to_string(), a.id))
+                .collect())
+        })
+        .unwrap_or_default();
+
+    let ipc_handler = Arc::new(DaemonHandler::new(
+        (*db_arc).clone(),
+        path_resolver,
+        provider_accounts,
+        None, // Action channel will be wired in a future PR
+    ));
+
+    let ipc_socket_path = paths.ipc_socket();
+    match IpcServer::bind(&ipc_socket_path) {
+        Ok(server) => {
+            info!(path = %ipc_socket_path.display(), "IPC server started");
+            let handler = ipc_handler.clone();
+            tokio::spawn(async move {
+                if let Err(e) = server.run(handler).await {
+                    error!("IPC server error: {e}");
+                }
+            });
+        }
+        Err(e) => {
+            error!("Failed to start IPC server: {e}");
+        }
+    }
 
     // Perform initial sync if not skipped
     if !args.skip_initial_sync {

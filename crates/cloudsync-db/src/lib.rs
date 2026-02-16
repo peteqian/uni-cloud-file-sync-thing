@@ -40,8 +40,8 @@ pub use accounts::{
 pub use connection::{ConnectionConfig, ConnectionManager};
 pub use error::{DbError, DbResult};
 pub use files::{
-    create_file, delete_file, delete_files_by_account, get_file_by_id, get_file_by_provider_id,
-    list_files, update_file, File, FILES_MIGRATION,
+    create_file, delete_file, delete_files_by_account, get_file_by_cloud_path, get_file_by_id,
+    get_file_by_provider_id, list_files, update_file, File, FILES_MIGRATION,
 };
 pub use migrations::{Migration, Migrator};
 pub use sync_cursors::SYNC_CURSORS_MIGRATION;

@@ -488,6 +488,8 @@ name = "cloudsync-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "chrono",
  "clap",
  "cloudsync-config",
  "cloudsync-core",
@@ -497,6 +499,7 @@ dependencies = [
  "cloudsync-sync",
  "directories",
  "dotenvy",
+ "rusqlite",
  "tempfile",
  "tokio",
  "tracing",

@@ -273,6 +273,34 @@ pub fn get_file_by_provider_id(
     })
 }
 
+/// Retrieves a file by account and cloud path.
+///
+/// Uses the `idx_files_path` index for efficient lookups.
+///
+/// # Returns
+///
+/// * `Ok(Some(File))` - The file if found
+/// * `Ok(None)` - If no file with this account and path exists
+pub fn get_file_by_cloud_path(
+    conn: &Connection,
+    account_id: &AccountId,
+    cloud_path: &CloudPath,
+) -> DbResult<Option<File>> {
+    conn.query_row(
+        "SELECT id, account_id, provider_file_id, path, name, size,
+                content_hash, is_folder, state, modified_at, synced_at,
+                created_at, updated_at
+         FROM files WHERE account_id = ?1 AND path = ?2",
+        params![account_id.to_string(), cloud_path.as_str()],
+        File::from_row,
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        _ => Err(DbError::from(e)),
+    })
+}
+
 /// Lists all files for a given account.
 ///
 /// # Arguments
@@ -567,6 +595,58 @@ mod tests {
 
         let result =
             get_file_by_provider_id(&conn, &account_id, &FileId::new("nonexistent")).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_file_by_cloud_path_found() {
+        let conn = setup_test_db();
+        let account_id = create_test_account(&conn);
+        let file = create_test_file(account_id.clone());
+
+        create_file(&conn, &file).unwrap();
+
+        let result = get_file_by_cloud_path(
+            &conn,
+            &account_id,
+            &CloudPath::new("/documents/test.pdf"),
+        )
+        .unwrap();
+        assert!(result.is_some());
+
+        let retrieved = result.unwrap();
+        assert_eq!(retrieved.path, file.path);
+        assert_eq!(retrieved.name, "test.pdf");
+    }
+
+    #[test]
+    fn test_get_file_by_cloud_path_not_found() {
+        let conn = setup_test_db();
+        let account_id = create_test_account(&conn);
+
+        let result = get_file_by_cloud_path(
+            &conn,
+            &account_id,
+            &CloudPath::new("/nonexistent/file.txt"),
+        )
+        .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_file_by_cloud_path_wrong_account() {
+        let conn = setup_test_db();
+        let account_id = create_test_account(&conn);
+        let file = create_test_file(account_id.clone());
+        create_file(&conn, &file).unwrap();
+
+        let other_account = AccountId::from_string("other-account-id");
+        let result = get_file_by_cloud_path(
+            &conn,
+            &other_account,
+            &CloudPath::new("/documents/test.pdf"),
+        )
+        .unwrap();
         assert!(result.is_none());
     }
 

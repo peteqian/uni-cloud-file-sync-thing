@@ -17,6 +17,7 @@ cloudsync-ipc.workspace = true
 cloudsync-providers.workspace = true
 cloudsync-sync.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -26,4 +27,6 @@ directories.workspace = true
 yup-oauth2.workspace = true
 
 [dev-dependencies]
+chrono.workspace = true
+rusqlite.workspace = true
 tempfile.workspace = true

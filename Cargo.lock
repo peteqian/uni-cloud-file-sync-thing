@@ -524,6 +524,7 @@ name = "cloudsync-ipc"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "cloudsync-config",
  "cloudsync-core",
  "serde",
  "serde_json",
@@ -588,7 +589,6 @@ dependencies = [
  "cloudsync-db",
  "cloudsync-providers",
  "directories",
- "dotenvy",
  "fuser",
  "libc",
  "tempfile",
@@ -597,7 +597,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
- "yup-oauth2",
 ]
 
 [[package]]

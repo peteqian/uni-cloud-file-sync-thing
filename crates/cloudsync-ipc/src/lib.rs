@@ -6,6 +6,7 @@
 //!
 //! Communication uses newline-delimited JSON over Unix sockets.
 
+pub mod client;
 pub mod error;
 pub mod handler;
 pub mod messages;
@@ -13,6 +14,7 @@ pub mod path_resolver;
 pub mod server;
 pub mod transport;
 
+pub use client::{IpcClient, IpcError};
 pub use error::{Error, Result};
 pub use handler::RequestHandler;
 pub use messages::{Request, Response};
